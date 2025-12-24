@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/flutter-webrtc/flutter-webrtc-server/pkg/logger"
@@ -86,6 +87,7 @@ type Signaler struct {
 	sessions  map[string]Session
 	turn      *turn.TurnServer
 	expresMap *util.ExpiredMap
+	peerMutex sync.RWMutex
 }
 
 func NewSignaler(turn *turn.TurnServer) *Signaler {
@@ -110,18 +112,23 @@ func (s Signaler) authHandler(username string, realm string, srcAddr net.Addr) (
 
 // NotifyPeersUpdate .
 func (s *Signaler) NotifyPeersUpdate(conn *websocket.WebSocketConn, peers map[string]Peer) {
+	s.peerMutex.RLock()
 	infos := []PeerInfo{}
 	for _, peer := range peers {
 		infos = append(infos, peer.info)
 	}
+	s.peerMutex.RUnlock()
 
 	request := Request{
 		Type: "peers",
 		Data: infos,
 	}
+
+	s.peerMutex.RLock()
 	for _, peer := range peers {
 		s.Send(peer.conn, request)
 	}
+	s.peerMutex.RUnlock()
 }
 
 // HandleTurnServerCredentials .
@@ -167,13 +174,15 @@ func (s *Signaler) HandleTurnServerCredentials(writer http.ResponseWriter, reque
 
 	*/
 	ttl := 86400
-	host := fmt.Sprintf("%s:%d", s.turn.Config.PublicIP, s.turn.Config.Port)
+	hostUDP := fmt.Sprintf("%s:%d", s.turn.Config.PublicIP, s.turn.Config.Port)
+	hostTCP := fmt.Sprintf("%s:%d", s.turn.Config.PublicIP, s.turn.Config.PortTCP)
 	credential := TurnCredentials{
 		Username: turnUsername,
 		Password: turnPassword,
 		TTL:      ttl,
 		Uris: []string{
-			"turn:" + host + "?transport=udp",
+			"turn:" + hostUDP + "?transport=udp",
+			"turn:" + hostTCP + "?transport=tcp",
 		},
 	}
 	s.expresMap.Set(turnUsername, credential, int64(ttl))
@@ -218,10 +227,12 @@ func (s *Signaler) HandleNewWebSocket(conn *websocket.WebSocketConn, request *ht
 				logger.Errorf("Unmarshal login error %v", err)
 				return
 			}
+			s.peerMutex.Lock()
 			s.peers[info.ID] = Peer{
 				conn: conn,
 				info: info,
 			}
+			s.peerMutex.Unlock()
 			s.NotifyPeersUpdate(conn, s.peers)
 			break
 		case Leave:
@@ -238,7 +249,9 @@ func (s *Signaler) HandleNewWebSocket(conn *websocket.WebSocketConn, request *ht
 					return
 				}
 				to := negotiation.To
+				s.peerMutex.RLock()
 				peer, ok := s.peers[to]
+				s.peerMutex.RUnlock()
 				if !ok {
 					msg := Request{
 						Type: "error",
@@ -275,7 +288,9 @@ func (s *Signaler) HandleNewWebSocket(conn *websocket.WebSocketConn, request *ht
 			}
 
 			sendBye := func(id string) {
+				s.peerMutex.RLock()
 				peer, ok := s.peers[id]
+				s.peerMutex.RUnlock()
 
 				if !ok {
 					msg := Request{
@@ -312,27 +327,42 @@ func (s *Signaler) HandleNewWebSocket(conn *websocket.WebSocketConn, request *ht
 
 	conn.On("close", func(code int, text string) {
 		logger.Infof("On Close %v", conn)
-		var peerID string = ""
 
+		// First, find the peer ID of the disconnecting peer
+		s.peerMutex.RLock()
+		var peerID string = ""
 		for _, peer := range s.peers {
 			if peer.conn == conn {
 				peerID = peer.info.ID
-			} else {
-				leave := Request{
-					Type: "leave",
-					Data: peer.info.ID,
-				}
-				s.Send(peer.conn, leave)
+				break
 			}
 		}
+		s.peerMutex.RUnlock()
 
-		logger.Infof("Remove peer %s", peerID)
 		if peerID == "" {
-			logger.Infof("Leve peer id not found")
+			logger.Warnf("Close event for unknown peer connection")
 			return
 		}
-		delete(s.peers, peerID)
 
+		logger.Infof("Peer %s disconnected", peerID)
+
+		// Remove the peer from the map
+		s.peerMutex.Lock()
+		delete(s.peers, peerID)
+		s.peerMutex.Unlock()
+
+		// Notify other peers that this peer has left
+		s.peerMutex.RLock()
+		for _, peer := range s.peers {
+			leave := Request{
+				Type: "leave",
+				Data: peerID,  // Send the ID of the peer that left
+			}
+			s.Send(peer.conn, leave)
+		}
+		s.peerMutex.RUnlock()
+
+		// Notify all remaining peers of the updated peer list
 		s.NotifyPeersUpdate(conn, s.peers)
 	})
 }

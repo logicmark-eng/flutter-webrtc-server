@@ -1,0 +1,909 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebRTC Audio Test Client</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #1a1a2e;
+            color: #eee;
+        }
+        h1 { color: #00d9ff; margin-bottom: 5px; }
+        .subtitle { color: #888; margin-bottom: 20px; }
+        
+        .panel {
+            background: #16213e;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 15px;
+        }
+        .panel h3 {
+            margin: 0 0 10px 0;
+            color: #00d9ff;
+            font-size: 14px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        
+        .status-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 10px;
+        }
+        .status-item {
+            background: #0f0f23;
+            padding: 10px;
+            border-radius: 4px;
+        }
+        .status-item label {
+            font-size: 11px;
+            color: #888;
+            text-transform: uppercase;
+        }
+        .status-item .value {
+            font-size: 16px;
+            font-weight: bold;
+            margin-top: 3px;
+        }
+        
+        .connected { color: #00ff88; }
+        .disconnected { color: #ff4757; }
+        .connecting { color: #ffa502; }
+        
+        button {
+            background: #00d9ff;
+            color: #1a1a2e;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+            margin-right: 10px;
+            margin-bottom: 10px;
+        }
+        button:hover { background: #00b8d9; }
+        button:disabled { background: #444; color: #888; cursor: not-allowed; }
+        button.danger { background: #ff4757; color: white; }
+        
+        textarea {
+            width: 100%;
+            height: 120px;
+            background: #0f0f23;
+            border: 1px solid #333;
+            color: #eee;
+            padding: 10px;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 12px;
+            resize: vertical;
+        }
+        
+        input[type="text"] {
+            background: #0f0f23;
+            border: 1px solid #333;
+            color: #eee;
+            padding: 10px;
+            border-radius: 4px;
+            width: 100%;
+            margin-bottom: 10px;
+        }
+        
+        .audio-meter {
+            height: 20px;
+            background: #0f0f23;
+            border-radius: 4px;
+            overflow: hidden;
+            margin-top: 5px;
+        }
+        .audio-meter-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #00ff88, #00d9ff, #ff4757);
+            width: 0%;
+            transition: width 0.1s;
+        }
+        
+        .log {
+            background: #0f0f23;
+            padding: 10px;
+            border-radius: 4px;
+            height: 150px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        .log-entry { margin: 2px 0; }
+        .log-entry.error { color: #ff4757; }
+        .log-entry.success { color: #00ff88; }
+        .log-entry.info { color: #00d9ff; }
+        
+        .row { display: flex; gap: 15px; flex-wrap: wrap; }
+        .row > * { flex: 1; min-width: 300px; }
+        
+        .codec-info {
+            font-family: monospace;
+            font-size: 13px;
+            background: #0f0f23;
+            padding: 10px;
+            border-radius: 4px;
+        }
+        
+        audio { width: 100%; margin-top: 10px; }
+    </style>
+</head>
+<body>
+    <h1>🎙️ WebRTC Audio Test Client</h1>
+    <p class="subtitle">For testing peer connections with ESP32/Raspberry Pi devices</p>
+
+    <!-- Connection Status -->
+    <div class="panel">
+        <h3>Connection Status</h3>
+        <div class="status-grid">
+            <div class="status-item">
+                <label>ICE Connection</label>
+                <div class="value disconnected" id="iceState">Not Started</div>
+            </div>
+            <div class="status-item">
+                <label>Signaling State</label>
+                <div class="value" id="signalingState">-</div>
+            </div>
+            <div class="status-item">
+                <label>ICE Gathering</label>
+                <div class="value" id="iceGatheringState">-</div>
+            </div>
+            <div class="status-item">
+                <label>Connection State</label>
+                <div class="value" id="connectionState">-</div>
+            </div>
+        </div>
+        <div style="margin-top: 10px; padding: 10px; background: #0f0f23; border-radius: 4px;">
+            <label style="font-size: 11px; color: #888; text-transform: uppercase;">Online Peers</label>
+            <div id="onlinePeers" style="font-family: monospace; font-size: 13px; margin-top: 5px; color: #00d9ff;">None detected</div>
+        </div>
+    </div>
+
+    <!-- Audio I/O -->
+    <div class="panel">
+        <h3>Audio</h3>
+        <div class="row">
+            <div>
+                <label>Local Microphone Level</label>
+                <div class="audio-meter"><div class="audio-meter-fill" id="localMeter"></div></div>
+            </div>
+            <div>
+                <label>Remote Audio Level</label>
+                <div class="audio-meter"><div class="audio-meter-fill" id="remoteMeter"></div></div>
+            </div>
+        </div>
+        <audio id="remoteAudio" autoplay controls></audio>
+    </div>
+
+    <!-- WebSocket Signaling -->
+    <div class="panel">
+        <h3>WebSocket Signaling</h3>
+        <div class="row">
+            <div style="flex: 2;">
+                <label style="font-size: 11px; color: #888;">Signaling Server URL</label>
+                <input type="text" id="wsUrl" value="wss://flutter-webrtc-develop.lgmk-eng.com:8086/ws">
+            </div>
+            <div style="flex: 1;">
+                <label style="font-size: 11px; color: #888;">Local Peer ID</label>
+                <input type="text" id="localPeerId" placeholder="e.g., browser-client-1">
+            </div>
+            <div style="flex: 1;">
+                <label style="font-size: 11px; color: #888;">Remote Peer ID</label>
+                <input type="text" id="remotePeerId" placeholder="e.g., rpi-device-1">
+            </div>
+        </div>
+        <button onclick="connectWebSocket()">Connect WS</button>
+        <button onclick="disconnectWebSocket()" class="danger">Disconnect WS</button>
+        <button onclick="updatePeersList()">🔄 Refresh Peers</button>
+        <button onclick="callPeer()">📞 Call Remote Peer</button>
+        <button onclick="hangUp()" class="danger">📴 Hang Up</button>
+        <span id="wsStatus" class="disconnected">Not Connected</span>
+    </div>
+
+    <!-- Manual SDP Exchange -->
+    <div class="panel">
+        <h3>Manual SDP Exchange</h3>
+        <div class="row">
+            <div>
+                <button onclick="createOffer()">Create Offer</button>
+                <button onclick="createAnswer()">Create Answer</button>
+                <textarea id="localSdp" placeholder="Local SDP will appear here. Copy this to your device."></textarea>
+            </div>
+            <div>
+                <button onclick="applyRemoteSdp()">Apply Remote SDP</button>
+                <button onclick="addIceCandidate()">Add ICE Candidate</button>
+                <textarea id="remoteSdp" placeholder="Paste remote SDP or ICE candidate here"></textarea>
+            </div>
+        </div>
+    </div>
+
+    <!-- Stats -->
+    <div class="panel">
+        <h3>Codec & Stats</h3>
+        <div class="codec-info" id="codecInfo">
+            No active connection
+        </div>
+    </div>
+
+    <!-- Event Log -->
+    <div class="panel">
+        <h3>Event Log</h3>
+        <button onclick="clearLog()">Clear</button>
+        <div class="log" id="log"></div>
+    </div>
+
+    <script>
+        let pc = null;
+        let localStream = null;
+        let ws = null;
+        let audioContext = null;
+        let localAnalyser = null;
+        let remoteAnalyser = null;
+
+        const config = {
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' }
+            ]
+        };
+
+        // Prefer Opus codec with specific settings
+        const audioConstraints = {
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                sampleRate: 48000,
+                channelCount: 1
+            },
+            video: false
+        };
+
+        function log(msg, type = '') {
+            const logEl = document.getElementById('log');
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${type}`;
+            entry.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+            logEl.appendChild(entry);
+            logEl.scrollTop = logEl.scrollHeight;
+            console.log(msg);
+        }
+
+        function clearLog() {
+            document.getElementById('log').innerHTML = '';
+        }
+
+        function updateStatus(id, value, className = '') {
+            const el = document.getElementById(id);
+            el.textContent = value;
+            el.className = `value ${className}`;
+        }
+
+        async function initializePeerConnection() {
+            if (pc) {
+                pc.close();
+            }
+
+            pc = new RTCPeerConnection(config);
+
+            pc.onicecandidate = (event) => {
+                if (event.candidate) {
+                    log(`ICE Candidate: ${event.candidate.candidate.substring(0, 50)}...`, 'info');
+                    const remotePeerId = document.getElementById('remotePeerId').value.trim();
+                    if (ws && ws.readyState === WebSocket.OPEN && remotePeerId) {
+                        sendSignalingMessage('candidate', {
+                            candidate: event.candidate.candidate,
+                            sdpMid: event.candidate.sdpMid,
+                            sdpMLineIndex: event.candidate.sdpMLineIndex
+                        }, remotePeerId, currentSessionId);
+                    }
+                } else {
+                    log('ICE gathering complete', 'success');
+                    document.getElementById('localSdp').value = JSON.stringify(pc.localDescription);
+                }
+            };
+
+            pc.oniceconnectionstatechange = () => {
+                const state = pc.iceConnectionState;
+                log(`ICE connection state: ${state}`);
+                const className = state === 'connected' || state === 'completed' ? 'connected' :
+                                  state === 'checking' ? 'connecting' : 'disconnected';
+                updateStatus('iceState', state, className);
+            };
+
+            pc.onsignalingstatechange = () => {
+                updateStatus('signalingState', pc.signalingState);
+            };
+
+            pc.onicegatheringstatechange = () => {
+                updateStatus('iceGatheringState', pc.iceGatheringState);
+            };
+
+            pc.onconnectionstatechange = () => {
+                const state = pc.connectionState;
+                const className = state === 'connected' ? 'connected' :
+                                  state === 'connecting' ? 'connecting' : 'disconnected';
+                updateStatus('connectionState', state, className);
+                
+                if (state === 'connected') {
+                    log('Peer connected!', 'success');
+                    startStatsMonitoring();
+                }
+            };
+
+            pc.ontrack = (event) => {
+                log('Received remote track', 'success');
+                const remoteAudio = document.getElementById('remoteAudio');
+                remoteAudio.srcObject = event.streams[0];
+                setupRemoteAudioMeter(event.streams[0]);
+            };
+
+            // Get local audio
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia(audioConstraints);
+                localStream.getTracks().forEach(track => {
+                    pc.addTrack(track, localStream);
+                    log(`Added local track: ${track.kind}`, 'info');
+                });
+                setupLocalAudioMeter(localStream);
+            } catch (err) {
+                log(`Error getting microphone: ${err.message}`, 'error');
+            }
+
+            return pc;
+        }
+
+        async function createOffer() {
+            await initializePeerConnection();
+            
+            try {
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+                log('Created offer', 'success');
+                
+                const localPeerId = document.getElementById('localPeerId').value.trim();
+                const remotePeerId = document.getElementById('remotePeerId').value.trim();
+                
+                if (ws && ws.readyState === WebSocket.OPEN && remotePeerId) {
+                    currentSessionId = generateSessionId(localPeerId, remotePeerId);
+                    sendSignalingMessage('offer', {
+                        sdp: offer.sdp,
+                        type: 'offer'
+                    }, remotePeerId, currentSessionId);
+                }
+            } catch (err) {
+                log(`Error creating offer: ${err.message}`, 'error');
+            }
+        }
+
+        async function createAnswer() {
+            if (!pc || !pc.remoteDescription) {
+                log('Apply remote offer first', 'error');
+                return;
+            }
+            
+            try {
+                const answer = await pc.createAnswer();
+                await pc.setLocalDescription(answer);
+                log('Created answer', 'success');
+                
+                const remotePeerId = document.getElementById('remotePeerId').value.trim();
+                if (ws && ws.readyState === WebSocket.OPEN && remotePeerId) {
+                    sendSignalingMessage('answer', {
+                        sdp: answer.sdp,
+                        type: 'answer'
+                    }, remotePeerId, currentSessionId);
+                }
+            } catch (err) {
+                log(`Error creating answer: ${err.message}`, 'error');
+            }
+        }
+
+        async function applyRemoteSdp() {
+            const sdpText = document.getElementById('remoteSdp').value.trim();
+            if (!sdpText) {
+                log('No SDP to apply', 'error');
+                return;
+            }
+
+            try {
+                const sdpData = JSON.parse(sdpText);
+                
+                if (sdpData.type === 'offer') {
+                    await initializePeerConnection();
+                    await pc.setRemoteDescription(new RTCSessionDescription(sdpData));
+                    log('Applied remote offer', 'success');
+                } else if (sdpData.type === 'answer') {
+                    await pc.setRemoteDescription(new RTCSessionDescription(sdpData));
+                    log('Applied remote answer', 'success');
+                } else if (sdpData.sdp) {
+                    await pc.setRemoteDescription(new RTCSessionDescription(sdpData.sdp || sdpData));
+                    log('Applied remote SDP', 'success');
+                }
+            } catch (err) {
+                log(`Error applying SDP: ${err.message}`, 'error');
+            }
+        }
+
+        async function addIceCandidate() {
+            const candidateText = document.getElementById('remoteSdp').value.trim();
+            if (!candidateText || !pc) {
+                log('No candidate or no peer connection', 'error');
+                return;
+            }
+
+            try {
+                const data = JSON.parse(candidateText);
+                const candidate = data.candidate || data;
+                await pc.addIceCandidate(new RTCIceCandidate(candidate));
+                log('Added ICE candidate', 'success');
+            } catch (err) {
+                log(`Error adding ICE candidate: ${err.message}`, 'error');
+            }
+        }
+
+        // WebSocket signaling
+        function connectWebSocket() {
+            const url = document.getElementById('wsUrl').value.trim();
+            const localPeerId = document.getElementById('localPeerId').value.trim();
+            
+            if (!url) {
+                log('Enter WebSocket URL', 'error');
+                return;
+            }
+            
+            if (!localPeerId) {
+                log('Enter Local Peer ID', 'error');
+                return;
+            }
+
+            try {
+                ws = new WebSocket(url);
+                
+                ws.onopen = () => {
+                    log('WebSocket connected', 'success');
+                    document.getElementById('wsStatus').textContent = 'Connected';
+                    document.getElementById('wsStatus').className = 'connected';
+                    
+                    // Register with signaling server
+                    // Format: {type: "new", data: {name, id, user_agent}}
+                    const localPeerId = document.getElementById('localPeerId').value.trim();
+                    const registerMsg = {
+                        type: 'new',
+                        data: {
+                            name: localPeerId,
+                            id: localPeerId,
+                            user_agent: navigator.userAgent
+                        }
+                    };
+                    console.log('Sending registration:', registerMsg);
+                    ws.send(JSON.stringify(registerMsg));
+                    log(`Sent registration: ${JSON.stringify(registerMsg)}`, 'info');
+                    
+                    // Request peers list after short delay
+                    setTimeout(() => {
+                        updatePeersList();
+                    }, 500);
+                };
+
+                ws.onclose = () => {
+                    log('WebSocket disconnected');
+                    document.getElementById('wsStatus').textContent = 'Disconnected';
+                    document.getElementById('wsStatus').className = 'disconnected';
+                };
+
+                ws.onerror = (err) => {
+                    log('WebSocket error', 'error');
+                };
+
+                ws.onmessage = async (event) => {
+                    try {
+                        // Log raw data first
+                        console.log('Raw event.data:', event.data);
+                        
+                        const data = JSON.parse(event.data);
+                        
+                        // Handle empty heartbeat/ping messages
+                        if (Object.keys(data).length === 0) {
+                            // Respond with pong (some servers expect this)
+                            ws.send(JSON.stringify({}));
+                            return;
+                        }
+                        
+                        // Debug: log raw message structure
+                        console.log('Parsed WS message:', data);
+                        log(`WS: ${JSON.stringify(data).substring(0, 120)}`, 'info');
+
+                        // Handle different message format possibilities
+                        const msgType = data.type;
+                        
+                        switch (msgType) {
+                            case 'peers':
+                                // List of connected peers - format: {type: "peers", data: [{id, name, user_agent}]}
+                                const peerList = data.data || [];
+                                const localPeerId = document.getElementById('localPeerId').value.trim();
+                                const otherPeers = Array.isArray(peerList) 
+                                    ? peerList.filter(p => (p.id || p) !== localPeerId)
+                                    : [];
+                                
+                                if (otherPeers.length > 0) {
+                                    const peerNames = otherPeers.map(p => p.id || p.name || p).join(', ');
+                                    document.getElementById('onlinePeers').textContent = peerNames;
+                                    document.getElementById('onlinePeers').style.color = '#00ff88';
+                                    log(`Found ${otherPeers.length} peer(s): ${peerNames}`, 'success');
+                                } else {
+                                    document.getElementById('onlinePeers').textContent = 'No other peers online';
+                                    document.getElementById('onlinePeers').style.color = '#888';
+                                    log('No other peers online', 'info');
+                                }
+                                break;
+                            
+                            case 'new':
+                                // New peer joined - format: {type: "new", data: {id, name, user_agent}}
+                                const newPeerData = data.data || data;
+                                const newPeerId = newPeerData.id || newPeerData.name || 'unknown';
+                                log(`New peer joined: ${newPeerId}`, 'success');
+                                
+                                // Update online peers display
+                                const currentPeers = document.getElementById('onlinePeers').textContent;
+                                if (currentPeers === 'None detected' || currentPeers === 'No other peers online') {
+                                    document.getElementById('onlinePeers').textContent = newPeerId;
+                                } else {
+                                    document.getElementById('onlinePeers').textContent = currentPeers + ', ' + newPeerId;
+                                }
+                                document.getElementById('onlinePeers').style.color = '#00ff88';
+                                break;
+                                
+                            case 'offer':
+                                await handleOffer(data);
+                                break;
+                                
+                            case 'answer':
+                                await handleAnswer(data);
+                                break;
+                                
+                            case 'candidate':
+                                await handleCandidate(data);
+                                break;
+                                
+                            case 'leave':
+                                const leaveData = data.data || data;
+                                log(`Peer left: ${leaveData.id || leaveData.from || 'unknown'}`, 'info');
+                                document.getElementById('onlinePeers').textContent = 'Peer disconnected';
+                                document.getElementById('onlinePeers').style.color = '#ff4757';
+                                break;
+                                
+                            case 'bye':
+                                const byeData = data.data || data;
+                                log(`Call ended by ${byeData.from || 'remote peer'}`, 'info');
+                                if (pc) {
+                                    pc.close();
+                                    pc = null;
+                                }
+                                currentSessionId = null;
+                                updateStatus('iceState', 'Call Ended', 'disconnected');
+                                break;
+                            
+                            case 'keepalive':
+                                // Server acknowledgment of keepalive
+                                break;
+                                
+                            default:
+                                log(`Unknown type "${msgType}": ${JSON.stringify(data).substring(0, 80)}`, 'info');
+                        }
+                    } catch (err) {
+                        log(`WS parse error: ${err.message}`, 'error');
+                        console.error('WS parse error:', err, 'Raw data:', event.data);
+                    }
+                };
+            } catch (err) {
+                log(`WebSocket error: ${err.message}`, 'error');
+            }
+        }
+
+        async function handleOffer(data) {
+            // Format: {type: "offer", data: {to, from, description: {sdp, type}, session_id, media}}
+            const inner = data.data || data;
+            const remotePeerId = inner.from;
+            const sessionId = inner.session_id;
+            
+            document.getElementById('remotePeerId').value = remotePeerId;
+            currentSessionId = sessionId;
+            
+            await initializePeerConnection();
+            
+            const description = inner.description || inner;
+            const sdp = description.sdp;
+            
+            await pc.setRemoteDescription(new RTCSessionDescription({
+                type: 'offer',
+                sdp: sdp
+            }));
+            
+            log(`Received offer from ${remotePeerId} (session: ${sessionId})`, 'success');
+            
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            
+            sendSignalingMessage('answer', {
+                sdp: answer.sdp,
+                type: 'answer'
+            }, remotePeerId, sessionId);
+        }
+
+        async function handleAnswer(data) {
+            // Format: {type: "answer", data: {to, from, description: {sdp, type}, session_id}}
+            const inner = data.data || data;
+            const description = inner.description || inner;
+            const sdp = description.sdp;
+            
+            await pc.setRemoteDescription(new RTCSessionDescription({
+                type: 'answer',
+                sdp: sdp
+            }));
+            log(`Applied answer from ${inner.from}`, 'success');
+        }
+
+        async function handleCandidate(data) {
+            // Format: {type: "candidate", data: {to, from, candidate: {candidate, sdpMid, sdpMLineIndex}, session_id}}
+            if (!pc) {
+                log('No peer connection for ICE candidate', 'error');
+                return;
+            }
+            
+            const inner = data.data || data;
+            const candidateData = inner.candidate || inner;
+            
+            try {
+                const candidate = new RTCIceCandidate({
+                    candidate: candidateData.candidate,
+                    sdpMid: candidateData.sdpMid || candidateData.id || '0',
+                    sdpMLineIndex: candidateData.sdpMLineIndex ?? candidateData.label ?? 0
+                });
+                
+                await pc.addIceCandidate(candidate);
+                log(`Added ICE candidate from ${inner.from}`, 'info');
+            } catch (err) {
+                log(`Error adding ICE candidate: ${err.message}`, 'error');
+            }
+        }
+
+        // Session ID for current call
+        let currentSessionId = null;
+
+        function generateSessionId(localId, remoteId) {
+            // Session ID format: smaller_id-larger_id
+            if (localId.localeCompare(remoteId) < 0) {
+                return `${localId}-${remoteId}`;
+            } else {
+                return `${remoteId}-${localId}`;
+            }
+        }
+
+        function sendSignalingMessage(type, payload, toPeerId, sessionId = null) {
+            const localPeerId = document.getElementById('localPeerId').value.trim();
+            
+            if (!sessionId) {
+                sessionId = currentSessionId || generateSessionId(localPeerId, toPeerId);
+                currentSessionId = sessionId;
+            }
+            
+            // flutter-webrtc-server format: {type: "...", data: {...}}
+            // All content goes inside the 'data' field
+            let message;
+            
+            if (type === 'offer' || type === 'answer') {
+                message = {
+                    type: type,
+                    data: {
+                        to: toPeerId,
+                        from: localPeerId,
+                        description: payload,  // {sdp, type}
+                        session_id: sessionId,
+                        media: 'audio'
+                    }
+                };
+            } else if (type === 'candidate') {
+                message = {
+                    type: type,
+                    data: {
+                        to: toPeerId,
+                        from: localPeerId,
+                        candidate: payload,  // {candidate, sdpMid, sdpMLineIndex}
+                        session_id: sessionId
+                    }
+                };
+            } else if (type === 'bye') {
+                message = {
+                    type: type,
+                    data: {
+                        to: toPeerId,
+                        from: localPeerId,
+                        session_id: sessionId
+                    }
+                };
+            } else {
+                message = {
+                    type: type,
+                    data: {
+                        ...payload,
+                        to: toPeerId,
+                        from: localPeerId,
+                        session_id: sessionId
+                    }
+                };
+            }
+            
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                console.log('Sending:', message);
+                ws.send(JSON.stringify(message));
+                log(`Sent ${type} to ${toPeerId}`, 'info');
+            } else {
+                log('WebSocket not connected', 'error');
+            }
+        }
+
+        async function callPeer() {
+            const localPeerId = document.getElementById('localPeerId').value.trim();
+            const remotePeerId = document.getElementById('remotePeerId').value.trim();
+            
+            if (!remotePeerId) {
+                log('Enter Remote Peer ID', 'error');
+                return;
+            }
+            
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                log('Connect to signaling server first', 'error');
+                return;
+            }
+            
+            // Generate session ID
+            currentSessionId = generateSessionId(localPeerId, remotePeerId);
+            log(`Starting call with session: ${currentSessionId}`, 'info');
+            
+            await initializePeerConnection();
+            
+            try {
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+                
+                sendSignalingMessage('offer', {
+                    sdp: offer.sdp,
+                    type: 'offer'
+                }, remotePeerId, currentSessionId);
+                
+                log(`Calling peer: ${remotePeerId}`, 'success');
+            } catch (err) {
+                log(`Error creating offer: ${err.message}`, 'error');
+            }
+        }
+
+        function disconnectWebSocket() {
+            const remotePeerId = document.getElementById('remotePeerId').value.trim();
+            
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                // Send bye message if in a call
+                if (remotePeerId && currentSessionId) {
+                    sendSignalingMessage('bye', { session_id: currentSessionId }, remotePeerId, currentSessionId);
+                }
+                ws.close();
+            }
+            ws = null;
+            
+            if (pc) {
+                pc.close();
+                pc = null;
+            }
+            
+            currentSessionId = null;
+            document.getElementById('onlinePeers').textContent = 'None detected';
+            document.getElementById('onlinePeers').style.color = '#888';
+        }
+
+        function updatePeersList() {
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                log('WebSocket not connected', 'error');
+                return;
+            }
+            
+            // Note: flutter-webrtc-server sends peers automatically on registration
+            // This manual request may not be supported
+            const peersRequest = { type: 'peers' };
+            ws.send(JSON.stringify(peersRequest));
+            log(`Sent peers request`, 'info');
+        }
+
+        function hangUp() {
+            const remotePeerId = document.getElementById('remotePeerId').value.trim();
+            
+            if (ws && ws.readyState === WebSocket.OPEN && remotePeerId && currentSessionId) {
+                sendSignalingMessage('bye', {
+                    session_id: currentSessionId
+                }, remotePeerId, currentSessionId);
+            }
+            
+            if (pc) {
+                pc.close();
+                pc = null;
+            }
+            
+            currentSessionId = null;
+            log('Call ended', 'info');
+            updateStatus('iceState', 'Disconnected', 'disconnected');
+            updateStatus('connectionState', '-', '');
+        }
+
+        // Audio metering
+        function setupLocalAudioMeter(stream) {
+            audioContext = new AudioContext();
+            const source = audioContext.createMediaStreamSource(stream);
+            localAnalyser = audioContext.createAnalyser();
+            localAnalyser.fftSize = 256;
+            source.connect(localAnalyser);
+            updateMeter('localMeter', localAnalyser);
+        }
+
+        function setupRemoteAudioMeter(stream) {
+            if (!audioContext) audioContext = new AudioContext();
+            const source = audioContext.createMediaStreamSource(stream);
+            remoteAnalyser = audioContext.createAnalyser();
+            remoteAnalyser.fftSize = 256;
+            source.connect(remoteAnalyser);
+            updateMeter('remoteMeter', remoteAnalyser);
+        }
+
+        function updateMeter(meterId, analyser) {
+            const meter = document.getElementById(meterId);
+            const dataArray = new Uint8Array(analyser.frequencyBinCount);
+            
+            function update() {
+                analyser.getByteFrequencyData(dataArray);
+                const avg = dataArray.reduce((a, b) => a + b) / dataArray.length;
+                const percent = Math.min(100, (avg / 128) * 100);
+                meter.style.width = `${percent}%`;
+                requestAnimationFrame(update);
+            }
+            update();
+        }
+
+        // Stats monitoring
+        function startStatsMonitoring() {
+            setInterval(async () => {
+                if (!pc || pc.connectionState !== 'connected') return;
+
+                const stats = await pc.getStats();
+                let codecInfo = '';
+                
+                stats.forEach(report => {
+                    if (report.type === 'codec') {
+                        codecInfo += `Codec: ${report.mimeType} (${report.clockRate}Hz)\n`;
+                    }
+                    if (report.type === 'inbound-rtp' && report.kind === 'audio') {
+                        codecInfo += `Inbound: ${report.packetsReceived} pkts, ${report.bytesReceived} bytes\n`;
+                        codecInfo += `Jitter: ${(report.jitter * 1000).toFixed(1)}ms, Lost: ${report.packetsLost}\n`;
+                    }
+                    if (report.type === 'outbound-rtp' && report.kind === 'audio') {
+                        codecInfo += `Outbound: ${report.packetsSent} pkts, ${report.bytesSent} bytes\n`;
+                    }
+                    if (report.type === 'candidate-pair' && report.state === 'succeeded') {
+                        codecInfo += `RTT: ${report.currentRoundTripTime * 1000}ms\n`;
+                    }
+                });
+
+                document.getElementById('codecInfo').textContent = codecInfo || 'Gathering stats...';
+            }, 1000);
+        }
+
+        // Initialize on load
+        log('WebRTC Test Client ready', 'success');
+        log('Use WebSocket for automated signaling or manual SDP exchange', 'info');
+    </script>
+</body>
+</html>

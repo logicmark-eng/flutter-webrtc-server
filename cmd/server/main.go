@@ -23,11 +23,16 @@ func main() {
 	if err != nil {
 		stunPort = 3478
 	}
+	stunPortTCP, err := cfg.Section("turn").Key("port_tcp").Int()
+	if err != nil {
+		stunPortTCP = 3479
+	}
 	realm := cfg.Section("turn").Key("realm").String()
 
 	turnConfig := turn.DefaultConfig()
 	turnConfig.PublicIP = publicIP
 	turnConfig.Port = stunPort
+	turnConfig.PortTCP = stunPortTCP
 	turnConfig.Realm = realm
 	turn := turn.NewTurnServer(turnConfig)
 
