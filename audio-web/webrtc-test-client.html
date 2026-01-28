@@ -138,7 +138,7 @@
 </head>
 <body>
     <h1>🎙️ WebRTC Audio Test Client</h1>
-    <p class="subtitle">For testing peer connections with ESP32/Raspberry Pi devices</p>
+    <p class="subtitle">Simple client for testing peer connections</p>
 
     <!-- Connection Status -->
     <div class="panel">
@@ -552,14 +552,15 @@
                     }, 500);
                 };
 
-                ws.onclose = () => {
-                    log('WebSocket disconnected');
+                ws.onclose = (event) => {
+                    log(`WebSocket disconnected (code=${event.code}, reason=${event.reason || 'none'})`, 'info');
                     document.getElementById('wsStatus').textContent = 'Disconnected';
                     document.getElementById('wsStatus').className = 'disconnected';
                 };
 
                 ws.onerror = (err) => {
-                    log('WebSocket error', 'error');
+                    log(`WebSocket error: ${err.type || 'unknown'}`, 'error');
+                    console.error('WebSocket error details:', err);
                 };
 
                 ws.onmessage = async (event) => {
@@ -739,11 +740,6 @@
 
         async function handleCandidate(data) {
             // Format: {type: "candidate", data: {to, from, candidate: {candidate, sdpMid, sdpMLineIndex}, session_id}}
-            if (!pc) {
-                log('No peer connection for ICE candidate', 'error');
-                return;
-            }
-            
             const inner = data.data || data;
             const candidateData = inner.candidate || inner;
 
@@ -763,9 +759,10 @@
                     sdpMLineIndex: candidateData.sdpMLineIndex ?? candidateData.label ?? 0
                 });
 
-                if (!remoteDescriptionSet) {
+                // Queue candidates if pc doesn't exist yet OR remote description not set
+                if (!pc || !remoteDescriptionSet) {
                     pendingCandidates.push(candidate);
-                    log(`Queued ICE candidate from ${inner.from} (waiting for remote description)`, 'info');
+                    log(`Queued ICE candidate from ${inner.from} (waiting for peer connection)`, 'info');
                     return;
                 }
 

@@ -106,11 +106,13 @@ func (s Signaler) authHandler(username string, realm string, srcAddr net.Addr) (
 	if found, info := s.expresMap.Get(username); found {
 		credential, ok := info.(TurnCredentials)
 		if !ok {
-			logger.Errorf("Invalid credential type for username: %s", username)
+			logger.Errorf("TURN auth: invalid credential type for username: %s", username)
 			return "", false
 		}
+		logger.Infof("TURN auth: success for username=%s from=%s", username, srcAddr.String())
 		return credential.Password, true
 	}
+	logger.Warnf("TURN auth: failed - username=%s not found (from=%s)", username, srcAddr.String())
 	return "", false
 }
 
