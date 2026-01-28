@@ -104,7 +104,11 @@ func NewSignaler(turn *turn.TurnServer) *Signaler {
 func (s Signaler) authHandler(username string, realm string, srcAddr net.Addr) (string, bool) {
 	// handle turn credential.
 	if found, info := s.expresMap.Get(username); found {
-		credential := info.(TurnCredentials)
+		credential, ok := info.(TurnCredentials)
+		if !ok {
+			logger.Errorf("Invalid credential type for username: %s", username)
+			return "", false
+		}
 		return credential.Password, true
 	}
 	return "", false
@@ -113,22 +117,21 @@ func (s Signaler) authHandler(username string, realm string, srcAddr net.Addr) (
 // NotifyPeersUpdate .
 func (s *Signaler) NotifyPeersUpdate(conn *websocket.WebSocketConn, peers map[string]Peer) {
 	s.peerMutex.RLock()
+	defer s.peerMutex.RUnlock()
+
 	infos := []PeerInfo{}
 	for _, peer := range peers {
 		infos = append(infos, peer.info)
 	}
-	s.peerMutex.RUnlock()
 
 	request := Request{
 		Type: "peers",
 		Data: infos,
 	}
 
-	s.peerMutex.RLock()
 	for _, peer := range peers {
 		s.Send(peer.conn, request)
 	}
-	s.peerMutex.RUnlock()
 }
 
 // HandleTurnServerCredentials .
@@ -139,14 +142,27 @@ func (s *Signaler) HandleTurnServerCredentials(writer http.ResponseWriter, reque
 
 	params, err := url.ParseQuery(request.URL.RawQuery)
 	if err != nil {
-
-	}
-	logger.Debugf("%v", params)
-	service := params["service"][0]
-	if service != "turn" {
+		http.Error(writer, "Invalid query parameters", http.StatusBadRequest)
 		return
 	}
-	username := params["username"][0]
+
+	services, ok := params["service"]
+	if !ok || len(services) == 0 {
+		http.Error(writer, "Missing service parameter", http.StatusBadRequest)
+		return
+	}
+	if services[0] != "turn" {
+		http.Error(writer, "Invalid service parameter", http.StatusBadRequest)
+		return
+	}
+
+	usernames, ok := params["username"]
+	if !ok || len(usernames) == 0 {
+		http.Error(writer, "Missing username parameter", http.StatusBadRequest)
+		return
+	}
+	username := usernames[0]
+	logger.Debugf("TURN credentials request: service=%s, username=%s", services[0], username)
 	timestamp := time.Now().Unix()
 	turnUsername := fmt.Sprintf("%d:%s", timestamp, username)
 	hmac := hmac.New(sha1.New, []byte(sharedKey))

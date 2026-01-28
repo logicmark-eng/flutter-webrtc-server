@@ -237,6 +237,7 @@
     <div class="panel">
         <h3>Event Log</h3>
         <button onclick="clearLog()">Clear</button>
+        <button onclick="copyLog()">Copy Log</button>
         <div class="log" id="log"></div>
     </div>
 
@@ -249,6 +250,10 @@
         let remoteAnalyser = null;
         let pendingCandidates = [];
         let remoteDescriptionSet = false;
+        let inCall = false;
+        let statsIntervalId = null;
+        let localMeterCancelFn = null;
+        let remoteMeterCancelFn = null;
 
         async function fetchTurnCredentials() {
             const wsUrl = document.getElementById('wsUrl').value.trim();
@@ -314,6 +319,17 @@
 
         function clearLog() {
             document.getElementById('log').innerHTML = '';
+        }
+
+        function copyLog() {
+            const logEl = document.getElementById('log');
+            const entries = logEl.querySelectorAll('.log-entry');
+            const text = Array.from(entries).map(e => e.textContent).join('\n');
+            navigator.clipboard.writeText(text).then(() => {
+                log('Log copied to clipboard', 'success');
+            }).catch(err => {
+                log(`Failed to copy log: ${err.message}`, 'error');
+            });
         }
 
         function updateStatus(id, value, className = '') {
@@ -659,10 +675,17 @@
             const inner = data.data || data;
             const remotePeerId = inner.from;
             const sessionId = inner.session_id;
-            
+
+            // If already in a call, reject the new offer
+            if (inCall) {
+                log(`Rejecting incoming call from ${remotePeerId} - already in a call`, 'error');
+                return;
+            }
+
             document.getElementById('remotePeerId').value = remotePeerId;
             currentSessionId = sessionId;
-            
+            inCall = true;
+
             await initializePeerConnection();
             
             const description = inner.description || inner;
@@ -831,21 +854,27 @@
         async function callPeer() {
             const localPeerId = document.getElementById('localPeerId').value.trim();
             const remotePeerId = document.getElementById('remotePeerId').value.trim();
-            
+
+            if (inCall) {
+                log('Already in a call. Hang up first.', 'error');
+                return;
+            }
+
             if (!remotePeerId) {
                 log('Enter Remote Peer ID', 'error');
                 return;
             }
-            
+
             if (!ws || ws.readyState !== WebSocket.OPEN) {
                 log('Connect to signaling server first', 'error');
                 return;
             }
-            
+
             // Generate session ID
             currentSessionId = generateSessionId(localPeerId, remotePeerId);
             log(`Starting call with session: ${currentSessionId}`, 'info');
-            
+
+            inCall = true;
             await initializePeerConnection();
             
             try {
@@ -865,7 +894,7 @@
 
         function disconnectWebSocket() {
             const remotePeerId = document.getElementById('remotePeerId').value.trim();
-            
+
             if (ws && ws.readyState === WebSocket.OPEN) {
                 // Send bye message if in a call
                 if (remotePeerId && currentSessionId) {
@@ -874,13 +903,17 @@
                 ws.close();
             }
             ws = null;
-            
+
             if (pc) {
                 pc.close();
                 pc = null;
             }
-            
+
+            cleanupResources();
+            inCall = false;
             currentSessionId = null;
+            remoteDescriptionSet = false;
+            pendingCandidates = [];
             document.getElementById('onlinePeers').textContent = 'None detected';
             document.getElementById('onlinePeers').style.color = '#888';
         }
@@ -900,32 +933,72 @@
 
         function hangUp() {
             const remotePeerId = document.getElementById('remotePeerId').value.trim();
-            
+
             if (ws && ws.readyState === WebSocket.OPEN && remotePeerId && currentSessionId) {
                 sendSignalingMessage('bye', {
                     session_id: currentSessionId
                 }, remotePeerId, currentSessionId);
             }
-            
+
             if (pc) {
                 pc.close();
                 pc = null;
             }
-            
+
+            cleanupResources();
+            inCall = false;
             currentSessionId = null;
+            remoteDescriptionSet = false;
+            pendingCandidates = [];
             log('Call ended', 'info');
             updateStatus('iceState', 'Disconnected', 'disconnected');
             updateStatus('connectionState', '-', '');
         }
 
+        // Resource cleanup
+        function cleanupResources() {
+            // Stop local stream tracks (release microphone)
+            if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+                localStream = null;
+                log('Microphone released', 'info');
+            }
+            // Cancel animation frames
+            if (localMeterCancelFn) {
+                localMeterCancelFn();
+                localMeterCancelFn = null;
+            }
+            if (remoteMeterCancelFn) {
+                remoteMeterCancelFn();
+                remoteMeterCancelFn = null;
+            }
+            // Clear stats interval
+            if (statsIntervalId) {
+                clearInterval(statsIntervalId);
+                statsIntervalId = null;
+            }
+            // Close audio context
+            if (audioContext) {
+                audioContext.close();
+                audioContext = null;
+            }
+            localAnalyser = null;
+            remoteAnalyser = null;
+            // Reset meters
+            document.getElementById('localMeter').style.width = '0%';
+            document.getElementById('remoteMeter').style.width = '0%';
+            // Reset codec info
+            document.getElementById('codecInfo').textContent = 'No active connection';
+        }
+
         // Audio metering
         function setupLocalAudioMeter(stream) {
-            audioContext = new AudioContext();
+            if (!audioContext) audioContext = new AudioContext();
             const source = audioContext.createMediaStreamSource(stream);
             localAnalyser = audioContext.createAnalyser();
             localAnalyser.fftSize = 256;
             source.connect(localAnalyser);
-            updateMeter('localMeter', localAnalyser);
+            localMeterCancelFn = updateMeter('localMeter', localAnalyser);
         }
 
         function setupRemoteAudioMeter(stream) {
@@ -934,31 +1007,43 @@
             remoteAnalyser = audioContext.createAnalyser();
             remoteAnalyser.fftSize = 256;
             source.connect(remoteAnalyser);
-            updateMeter('remoteMeter', remoteAnalyser);
+            remoteMeterCancelFn = updateMeter('remoteMeter', remoteAnalyser);
         }
 
         function updateMeter(meterId, analyser) {
             const meter = document.getElementById(meterId);
             const dataArray = new Uint8Array(analyser.frequencyBinCount);
-            
+            let animationId = null;
+
             function update() {
                 analyser.getByteFrequencyData(dataArray);
                 const avg = dataArray.reduce((a, b) => a + b) / dataArray.length;
                 const percent = Math.min(100, (avg / 128) * 100);
                 meter.style.width = `${percent}%`;
-                requestAnimationFrame(update);
+                animationId = requestAnimationFrame(update);
             }
             update();
+
+            // Return cancel function
+            return () => {
+                if (animationId) {
+                    cancelAnimationFrame(animationId);
+                    animationId = null;
+                }
+            };
         }
 
         // Stats monitoring
         function startStatsMonitoring() {
-            setInterval(async () => {
+            if (statsIntervalId) {
+                clearInterval(statsIntervalId);
+            }
+            statsIntervalId = setInterval(async () => {
                 if (!pc || pc.connectionState !== 'connected') return;
 
                 const stats = await pc.getStats();
                 let codecInfo = '';
-                
+
                 stats.forEach(report => {
                     if (report.type === 'codec') {
                         codecInfo += `Codec: ${report.mimeType} (${report.clockRate}Hz)\n`;

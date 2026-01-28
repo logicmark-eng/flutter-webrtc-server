@@ -82,6 +82,7 @@ func NewTurnServer(config TurnServerConfig) *TurnServer {
 	// Create TCP listener
 	tcpListener, err := net.Listen("tcp4", "0.0.0.0:"+strconv.Itoa(config.PortTCP))
 	if err != nil {
+		udpListener.Close() // Clean up UDP listener on failure
 		logger.Panicf("Failed to create TURN server TCP listener: %s", err)
 	}
 	server.tcpListener = tcpListener
@@ -110,6 +111,8 @@ func NewTurnServer(config TurnServerConfig) *TurnServer {
 		},
 	})
 	if err != nil {
+		udpListener.Close() // Clean up listeners on failure
+		tcpListener.Close()
 		logger.Panicf("%v", err)
 	}
 	server.turnServer = turnServer
