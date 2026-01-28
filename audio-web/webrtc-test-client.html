@@ -635,7 +635,12 @@
                             case 'keepalive':
                                 // Server acknowledgment of keepalive
                                 break;
-                                
+
+                            case 'error':
+                                const errData = data.data || data;
+                                log(`Server error: ${errData.reason || JSON.stringify(errData)}`, 'error');
+                                break;
+
                             default:
                                 log(`Unknown type "${msgType}": ${JSON.stringify(data).substring(0, 80)}`, 'info');
                         }
@@ -752,11 +757,11 @@
         let currentSessionId = null;
 
         function generateSessionId(localId, remoteId) {
-            // Session ID format: smaller_id-larger_id
+            // Session ID format: smaller_id~larger_id (using ~ to avoid conflicts with hyphens in peer IDs)
             if (localId.localeCompare(remoteId) < 0) {
-                return `${localId}-${remoteId}`;
+                return `${localId}~${remoteId}`;
             } else {
-                return `${remoteId}-${localId}`;
+                return `${remoteId}~${localId}`;
             }
         }
 

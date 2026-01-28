@@ -274,7 +274,7 @@ func (s *Signaler) HandleNewWebSocket(conn *websocket.WebSocketConn, request *ht
 				return
 			}
 
-			ids := strings.Split(bye.SessionID, "-")
+			ids := strings.Split(bye.SessionID, "~")
 			if len(ids) != 2 {
 				msg := Request{
 					Type: "error",
