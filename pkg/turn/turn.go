@@ -39,6 +39,27 @@ type TurnServer struct {
 	AuthHandler func(username string, realm string, srcAddr net.Addr) (string, bool)
 }
 
+func resolvePublicIP(publicIP string) net.IP {
+	ip := net.ParseIP(publicIP)
+	if ip != nil {
+		return ip
+	}
+	// Not a numeric IP — try resolving as domain name
+	ips, err := net.LookupIP(publicIP)
+	if err != nil || len(ips) == 0 {
+		logger.Panicf("Cannot resolve public_ip '%s': %v", publicIP, err)
+	}
+	// Prefer IPv4
+	for _, resolved := range ips {
+		if resolved.To4() != nil {
+			logger.Infof("Resolved public_ip '%s' to %s", publicIP, resolved.String())
+			return resolved
+		}
+	}
+	logger.Infof("Resolved public_ip '%s' to %s", publicIP, ips[0].String())
+	return ips[0]
+}
+
 func NewTurnServer(config TurnServerConfig) *TurnServer {
 	server := &TurnServer{
 		Config:      config,
@@ -47,6 +68,8 @@ func NewTurnServer(config TurnServerConfig) *TurnServer {
 	if len(config.PublicIP) == 0 {
 		logger.Panicf("'public-ip' is required")
 	}
+
+	relayIP := resolvePublicIP(config.PublicIP)
 
 	// Create UDP listener
 	udpListener, err := net.ListenPacket("udp4", "0.0.0.0:"+strconv.Itoa(config.Port))
@@ -71,7 +94,7 @@ func NewTurnServer(config TurnServerConfig) *TurnServer {
 			{
 				PacketConn: udpListener,
 				RelayAddressGenerator: &turn.RelayAddressGeneratorStatic{
-					RelayAddress: net.ParseIP(config.PublicIP),
+					RelayAddress: relayIP,
 					Address:      "0.0.0.0",
 				},
 			},
@@ -80,7 +103,7 @@ func NewTurnServer(config TurnServerConfig) *TurnServer {
 			{
 				Listener: tcpListener,
 				RelayAddressGenerator: &turn.RelayAddressGeneratorStatic{
-					RelayAddress: net.ParseIP(config.PublicIP),
+					RelayAddress: relayIP,
 					Address:      "0.0.0.0",
 				},
 			},

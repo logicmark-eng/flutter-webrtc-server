@@ -256,13 +256,25 @@
             const baseUrl = `https://${url.host}/api/turn`;
             const localPeerId = document.getElementById('localPeerId').value.trim() || 'web-client';
 
-            const resp = await fetch(`${baseUrl}?service=turn&username=${localPeerId}`);
-            const data = await resp.json();
-            return {
-                urls: data.uris,
-                username: data.username,
-                credential: data.password
-            };
+            log(`Fetching TURN credentials from ${baseUrl}...`, 'info');
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 5000);
+            try {
+                const resp = await fetch(
+                    `${baseUrl}?service=turn&username=${localPeerId}`,
+                    { signal: controller.signal }
+                );
+                clearTimeout(timeout);
+                const data = await resp.json();
+                return {
+                    urls: data.uris,
+                    username: data.username,
+                    credential: data.password
+                };
+            } catch (err) {
+                clearTimeout(timeout);
+                throw err;
+            }
         }
 
         async function buildIceConfig() {
@@ -541,10 +553,8 @@
                         
                         const data = JSON.parse(event.data);
                         
-                        // Handle empty heartbeat/ping messages
+                        // Server keepalive — no response needed
                         if (Object.keys(data).length === 0) {
-                            // Respond with pong (some servers expect this)
-                            ws.send(JSON.stringify({}));
                             return;
                         }
                         
