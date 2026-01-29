@@ -3,8 +3,6 @@
  
 A simple WebRTC Signaling server for flutter-webrtc and html5.
 
-Online Demo: https://demo.cloudwebrtc.com:8086/
-
 ## Features
 - Support Windows/Linux/macOS
 - Built-in web, signaling, [turn server](https://github.com/pion/turn/tree/master/examples/turn-server)

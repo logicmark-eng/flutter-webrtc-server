@@ -71,7 +71,7 @@ func (conn *WebSocketConn) ReadMessage() {
 			}
 		case message := <-in:
 			{
-				logger.Infof("Recivied data: %s", message)
+				logger.Infof("Received data: %s", message)
 				conn.Emit("message", []byte(message))
 			}
 		case <-stop:
