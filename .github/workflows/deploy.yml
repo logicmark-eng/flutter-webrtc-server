@@ -226,7 +226,7 @@ jobs:
             --document-name "AWS-RunShellScript" \
             --comment "Deploy WebRTC Server ${{ needs.build.outputs.version }} to ${{ needs.build.outputs.environment }}" \
             --parameters 'commands=[
-              "set -euo pipefail",
+              "set -eu",
               "echo \"==> WebRTC Server Deployment\"",
               "echo \"    Version: ${{ needs.build.outputs.version }}\"",
               "echo \"    Package: ${{ needs.build.outputs.zip_filename }}\"",
