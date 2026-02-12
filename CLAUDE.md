@@ -142,3 +142,65 @@ The server implements [draft-uberti-behave-turn-rest-00](https://tools.ietf.org/
 ### Web Client
 
 The `web/` directory contains a compiled Flutter web application (demo client). The server serves this as static content at the root path `/`.
+
+## CI/CD and Deployment
+
+### Automated Deployment Pipeline
+
+The project uses GitHub Actions for automated deployment to AWS EC2:
+
+**Pipeline Overview:**
+1. Push to `master` branch triggers workflow
+2. Creates versioned ZIP package
+3. Uploads to S3: `ota-img-dev.lgmk-eng.com`
+4. Executes deployment via AWS Systems Manager (SSM)
+5. EC2 instance downloads, builds, and restarts service
+
+**Documentation:**
+- Quick start: `.github/CICD-QUICK-START.md`
+- Complete guide: `CICD-SETUP.md`
+- Flow diagrams: `.github/DEPLOYMENT-FLOW.md`
+
+### Deployment Scripts
+
+**Location:** `scripts/deploy-flutter-webrtc-server.sh`
+
+The deployment script handles:
+- Download from S3
+- Backup current version (timestamped)
+- Extract and build Go binary
+- Copy SSL/TLS certificates from Let's Encrypt
+- Systemd service restart
+- Rollback support
+
+**Usage on EC2:**
+```bash
+./deploy-flutter-webrtc-server.sh -b ota-img-dev.lgmk-eng.com -f <zip-file>
+```
+
+See `scripts/README.md` for detailed documentation.
+
+### Current Configuration
+
+- **Active Branch:** `master`
+- **Environment:** develop
+- **Current Version:** v0.0.7
+- **Next Version:** v0.0.8
+- **EC2 Instance:** `lgmk-flutter-webrtc-server-develop`
+- **Deployment Method:** GitHub Actions → S3 → SSM → EC2
+
+### IAM Roles (OIDC)
+
+GitHub Actions uses environment-specific IAM roles:
+- `AWS_ROLE_TO_ASSUME_DEVELOP` - For develop environment (active)
+- `AWS_ROLE_TO_ASSUME_QA` - For qa environment (future)
+- `AWS_ROLE_TO_ASSUME_STAGING` - For staging environment (future)
+- `AWS_ROLE_TO_ASSUME_MAIN2` - For production/main2 (future)
+
+### Infrastructure
+
+Managed by separate Terraform project: `lgmk-pers-base-infra`
+- EC2 instance with Ubuntu 24.04 LTS
+- Security groups (ports: 22, 80, 8086, 19302/UDP, 19303/TCP)
+- IAM roles for SSM and CloudWatch
+- Let's Encrypt SSL certificates
