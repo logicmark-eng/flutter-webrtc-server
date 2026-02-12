@@ -12,7 +12,7 @@ import (
 )
 
 const pingPeriod = 5 * time.Second
-const readDeadline = 3 * pingPeriod // Expect at least one message within 3 ping cycles
+const pongWait = 3 * pingPeriod // If no pong received within 3 ping cycles, connection is dead
 
 type WebSocketConn struct {
 	emission.Emitter
@@ -33,6 +33,11 @@ func NewWebSocketConn(socket *websocket.Conn) *WebSocketConn {
 		conn.emitClose(code, text)
 		return nil
 	})
+	// Reset read deadline on pong receipt (browser sends pong automatically)
+	conn.socket.SetPongHandler(func(appData string) error {
+		conn.socket.SetReadDeadline(time.Now().Add(pongWait))
+		return nil
+	})
 	return &conn
 }
 
@@ -42,7 +47,8 @@ func (conn *WebSocketConn) ReadMessage() {
 	pingTicker := time.NewTicker(pingPeriod)
 
 	var c = conn.socket
-	c.SetReadDeadline(time.Now().Add(readDeadline))
+	// Set initial read deadline; subsequent resets happen via pong handler
+	c.SetReadDeadline(time.Now().Add(pongWait))
 	go func() {
 		for {
 			_, message, err := c.ReadMessage()
@@ -51,14 +57,13 @@ func (conn *WebSocketConn) ReadMessage() {
 				if c, k := err.(*websocket.CloseError); k {
 					conn.emitClose(c.Code, c.Text)
 				} else if netErr, k := err.(net.Error); k && netErr.Timeout() {
-					conn.emitClose(1006, "read deadline exceeded")
+					conn.emitClose(1006, "pong timeout")
 				} else if c, k := err.(*net.OpError); k {
 					conn.emitClose(1008, c.Error())
 				}
 				close(stop)
 				break
 			}
-			c.SetReadDeadline(time.Now().Add(readDeadline))
 			in <- message
 		}
 	}()
@@ -66,7 +71,18 @@ func (conn *WebSocketConn) ReadMessage() {
 	for {
 		select {
 		case _ = <-pingTicker.C:
-			logger.Infof("Send keepalive !!!")
+			// Send WebSocket ping frame for connection liveness detection
+			conn.mutex.Lock()
+			pingErr := conn.socket.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(5*time.Second))
+			conn.mutex.Unlock()
+			if pingErr != nil {
+				logger.Errorf("WebSocket ping failed: %v", pingErr)
+				pingTicker.Stop()
+				conn.emitClose(1006, "ping failed")
+				conn.socket.Close()
+				return
+			}
+			// Also send application-level keepalive for client awareness
 			if err := conn.Send(`{"type":"keepalive"}`); err != nil {
 				logger.Errorf("Keepalive has failed")
 				pingTicker.Stop()

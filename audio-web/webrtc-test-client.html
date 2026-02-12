@@ -673,10 +673,9 @@
                                 break;
                             
                             case 'keepalive':
-                                // Respond to server keepalive to reset its read deadline
-                                if (ws && ws.readyState === WebSocket.OPEN) {
-                                    ws.send(JSON.stringify({type: 'keepalive'}));
-                                }
+                                // Server sends keepalive for app-level awareness.
+                                // Connection liveness is handled by WebSocket ping/pong
+                                // frames (browser responds automatically).
                                 break;
 
                             case 'error':
