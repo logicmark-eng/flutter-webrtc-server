@@ -231,7 +231,7 @@ jobs:
               "echo \"    Version: ${{ needs.build.outputs.version }}\"",
               "echo \"    Package: ${{ needs.build.outputs.zip_filename }}\"",
               "echo \"    Environment: ${{ needs.build.outputs.environment }}\"",
-              "echo \"    Git SHA: ${GITHUB_SHA}\"",
+              "echo \"    Git SHA: ${{ github.sha }}\"",
               "echo \"\"",
               "cd /home/ubuntu",
               "if [ ! -f deploy-flutter-webrtc-server.sh ]; then echo \"❌ ERROR: Deployment script not found at /home/ubuntu/deploy-flutter-webrtc-server.sh\"; exit 1; fi",
