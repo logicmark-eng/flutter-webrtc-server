@@ -633,9 +633,27 @@
                                 
                             case 'leave':
                                 const leaveData = data.data || data;
-                                log(`Peer left: ${leaveData.id || leaveData.from || 'unknown'}`, 'info');
+                                const leftPeerId = typeof leaveData === 'string' ? leaveData : (leaveData.id || leaveData.from || 'unknown');
+                                log(`Peer left: ${leftPeerId}`, 'info');
                                 document.getElementById('onlinePeers').textContent = 'Peer disconnected';
                                 document.getElementById('onlinePeers').style.color = '#ff4757';
+
+                                // Clean up WebRTC if the peer that left was our call partner
+                                const currentRemotePeer = document.getElementById('remotePeerId').value.trim();
+                                if (inCall && leftPeerId === currentRemotePeer) {
+                                    log('Remote peer disconnected during call — cleaning up', 'info');
+                                    if (pc) {
+                                        pc.close();
+                                        pc = null;
+                                    }
+                                    cleanupResources();
+                                    inCall = false;
+                                    currentSessionId = null;
+                                    remoteDescriptionSet = false;
+                                    pendingCandidates = [];
+                                    updateStatus('iceState', 'Peer Disconnected', 'disconnected');
+                                    updateStatus('connectionState', '-', '');
+                                }
                                 break;
                                 
                             case 'bye':
@@ -645,12 +663,20 @@
                                     pc.close();
                                     pc = null;
                                 }
+                                cleanupResources();
+                                inCall = false;
                                 currentSessionId = null;
+                                remoteDescriptionSet = false;
+                                pendingCandidates = [];
                                 updateStatus('iceState', 'Call Ended', 'disconnected');
+                                updateStatus('connectionState', '-', '');
                                 break;
                             
                             case 'keepalive':
-                                // Server acknowledgment of keepalive
+                                // Respond to server keepalive to reset its read deadline
+                                if (ws && ws.readyState === WebSocket.OPEN) {
+                                    ws.send(JSON.stringify({type: 'keepalive'}));
+                                }
                                 break;
 
                             case 'error':

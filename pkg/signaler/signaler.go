@@ -36,13 +36,6 @@ type Peer struct {
 	conn *websocket.WebSocketConn
 }
 
-// Session info.
-type Session struct {
-	id   string
-	from Peer
-	to   Peer
-}
-
 type Method string
 
 const (
@@ -84,7 +77,6 @@ type Error struct {
 
 type Signaler struct {
 	peers     map[string]Peer
-	sessions  map[string]Session
 	turn      *turn.TurnServer
 	expresMap *util.ExpiredMap
 	peerMutex sync.RWMutex
@@ -93,7 +85,6 @@ type Signaler struct {
 func NewSignaler(turn *turn.TurnServer) *Signaler {
 	var signaler = &Signaler{
 		peers:     make(map[string]Peer),
-		sessions:  make(map[string]Session),
 		turn:      turn,
 		expresMap: util.NewExpiredMap(),
 	}
@@ -116,23 +107,26 @@ func (s Signaler) authHandler(username string, realm string, srcAddr net.Addr) (
 	return "", false
 }
 
-// NotifyPeersUpdate .
+// NotifyPeersUpdate broadcasts the current peer list to all connected peers.
 func (s *Signaler) NotifyPeersUpdate(conn *websocket.WebSocketConn, peers map[string]Peer) {
+	// Collect data under the lock
 	s.peerMutex.RLock()
-	defer s.peerMutex.RUnlock()
-
-	infos := []PeerInfo{}
+	infos := make([]PeerInfo, 0, len(peers))
+	conns := make([]*websocket.WebSocketConn, 0, len(peers))
 	for _, peer := range peers {
 		infos = append(infos, peer.info)
+		conns = append(conns, peer.conn)
 	}
+	s.peerMutex.RUnlock()
 
 	request := Request{
 		Type: "peers",
 		Data: infos,
 	}
 
-	for _, peer := range peers {
-		s.Send(peer.conn, request)
+	// Send outside the lock to avoid blocking other operations
+	for _, c := range conns {
+		s.Send(c, request)
 	}
 }
 
@@ -246,6 +240,11 @@ func (s *Signaler) HandleNewWebSocket(conn *websocket.WebSocketConn, request *ht
 				return
 			}
 			s.peerMutex.Lock()
+			if existing, exists := s.peers[info.ID]; exists {
+				// Close the old connection if a peer re-registers with the same ID
+				logger.Warnf("Peer %s re-registering, closing old connection", info.ID)
+				go existing.conn.Close()
+			}
 			s.peers[info.ID] = Peer{
 				conn: conn,
 				info: info,
@@ -305,36 +304,36 @@ func (s *Signaler) HandleNewWebSocket(conn *websocket.WebSocketConn, request *ht
 				return
 			}
 
-			sendBye := func(id string) {
-				s.peerMutex.RLock()
-				peer, ok := s.peers[id]
-				s.peerMutex.RUnlock()
+			// Determine the remote peer (the one that is NOT the sender)
+			remoteID := ids[0]
+			if ids[0] == bye.From {
+				remoteID = ids[1]
+			}
 
-				if !ok {
-					msg := Request{
-						Type: "error",
-						Data: Error{
-							Request: string(request.Type),
-							Reason:  "Peer [" + id + "] not found.",
-						},
-					}
-					s.Send(conn, msg)
-					return
+			s.peerMutex.RLock()
+			remotePeer, ok := s.peers[remoteID]
+			s.peerMutex.RUnlock()
+
+			if !ok {
+				msg := Request{
+					Type: "error",
+					Data: Error{
+						Request: string(request.Type),
+						Reason:  "Peer [" + remoteID + "] not found.",
+					},
 				}
-				bye := Request{
+				s.Send(conn, msg)
+			} else {
+				byeMsg := Request{
 					Type: "bye",
 					Data: map[string]interface{}{
-						"to":         id,
+						"from":       bye.From,
+						"to":         remoteID,
 						"session_id": bye.SessionID,
 					},
 				}
-				s.Send(peer.conn, bye)
+				s.Send(remotePeer.conn, byeMsg)
 			}
-
-			// send to aleg
-			sendBye(ids[0])
-			//send to bleg
-			sendBye(ids[1])
 
 		case Keepalive:
 			s.Send(conn, request)
@@ -346,39 +345,41 @@ func (s *Signaler) HandleNewWebSocket(conn *websocket.WebSocketConn, request *ht
 	conn.On("close", func(code int, text string) {
 		logger.Infof("On Close %v", conn)
 
-		// First, find the peer ID of the disconnecting peer
-		s.peerMutex.RLock()
-		var peerID string = ""
+		// Find and remove the peer atomically under a single write lock
+		s.peerMutex.Lock()
+		var peerID string
 		for _, peer := range s.peers {
 			if peer.conn == conn {
 				peerID = peer.info.ID
 				break
 			}
 		}
-		s.peerMutex.RUnlock()
-
 		if peerID == "" {
+			s.peerMutex.Unlock()
 			logger.Warnf("Close event for unknown peer connection")
 			return
 		}
+		delete(s.peers, peerID)
+
+		// Collect remaining peer connections while still holding the lock
+		remainingPeers := make([]Peer, 0, len(s.peers))
+		for _, peer := range s.peers {
+			remainingPeers = append(remainingPeers, peer)
+		}
+		s.peerMutex.Unlock()
 
 		logger.Infof("Peer %s disconnected", peerID)
 
-		// Remove the peer from the map
-		s.peerMutex.Lock()
-		delete(s.peers, peerID)
-		s.peerMutex.Unlock()
-
-		// Notify other peers that this peer has left
-		s.peerMutex.RLock()
-		for _, peer := range s.peers {
+		// Notify other peers outside the lock to avoid blocking
+		for _, peer := range remainingPeers {
 			leave := Request{
 				Type: "leave",
-				Data: peerID,  // Send the ID of the peer that left
+				Data: map[string]interface{}{
+					"id": peerID,
+				},
 			}
 			s.Send(peer.conn, leave)
 		}
-		s.peerMutex.RUnlock()
 
 		// Notify all remaining peers of the updated peer list
 		s.NotifyPeersUpdate(conn, s.peers)

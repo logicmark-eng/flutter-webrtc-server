@@ -12,12 +12,14 @@ import (
 )
 
 const pingPeriod = 5 * time.Second
+const readDeadline = 3 * pingPeriod // Expect at least one message within 3 ping cycles
 
 type WebSocketConn struct {
 	emission.Emitter
-	socket *websocket.Conn
-	mutex  *sync.Mutex
-	closed bool
+	socket    *websocket.Conn
+	mutex     *sync.Mutex
+	closed    bool
+	closeOnce sync.Once
 }
 
 func NewWebSocketConn(socket *websocket.Conn) *WebSocketConn {
@@ -28,8 +30,7 @@ func NewWebSocketConn(socket *websocket.Conn) *WebSocketConn {
 	conn.closed = false
 	conn.socket.SetCloseHandler(func(code int, text string) error {
 		logger.Warnf("%s [%d]", text, code)
-		conn.Emit("close", code, text)
-		conn.closed = true
+		conn.emitClose(code, text)
 		return nil
 	})
 	return &conn
@@ -41,21 +42,23 @@ func (conn *WebSocketConn) ReadMessage() {
 	pingTicker := time.NewTicker(pingPeriod)
 
 	var c = conn.socket
+	c.SetReadDeadline(time.Now().Add(readDeadline))
 	go func() {
 		for {
 			_, message, err := c.ReadMessage()
 			if err != nil {
 				logger.Warnf("Got error: %v", err)
 				if c, k := err.(*websocket.CloseError); k {
-					conn.Emit("close", c.Code, c.Text)
-				} else {
-					if c, k := err.(*net.OpError); k {
-						conn.Emit("close", 1008, c.Error())
-					}
+					conn.emitClose(c.Code, c.Text)
+				} else if netErr, k := err.(net.Error); k && netErr.Timeout() {
+					conn.emitClose(1006, "read deadline exceeded")
+				} else if c, k := err.(*net.OpError); k {
+					conn.emitClose(1008, c.Error())
 				}
 				close(stop)
 				break
 			}
+			c.SetReadDeadline(time.Now().Add(readDeadline))
 			in <- message
 		}
 	}()
@@ -67,6 +70,8 @@ func (conn *WebSocketConn) ReadMessage() {
 			if err := conn.Send(`{"type":"keepalive"}`); err != nil {
 				logger.Errorf("Keepalive has failed")
 				pingTicker.Stop()
+				conn.emitClose(1006, "keepalive failed")
+				conn.socket.Close()
 				return
 			}
 		case message := <-in:
@@ -78,6 +83,13 @@ func (conn *WebSocketConn) ReadMessage() {
 			return
 		}
 	}
+}
+
+func (conn *WebSocketConn) emitClose(code int, text string) {
+	conn.closeOnce.Do(func() {
+		conn.closed = true
+		conn.Emit("close", code, text)
+	})
 }
 
 /*
