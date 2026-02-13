@@ -257,12 +257,15 @@ jobs:
               "export HOMEBREW_PREFIX=/home/linuxbrew/.linuxbrew",
               "export HOMEBREW_CELLAR=/home/linuxbrew/.linuxbrew/Cellar",
               "export HOMEBREW_REPOSITORY=/home/linuxbrew/.linuxbrew/Homebrew",
+              "export GO111MODULE=on",
+              "export CGO_ENABLED=0",
               "echo \"Go version: $(go version)\"",
+              "echo \"GO111MODULE: ${GO111MODULE}\"",
               "echo \"\"",
               "cd /home/ubuntu",
               "if [ ! -f deploy-flutter-webrtc-server.sh ]; then echo \"❌ ERROR: Deployment script not found at /home/ubuntu/deploy-flutter-webrtc-server.sh\"; exit 1; fi",
-              "echo \"==> Executing deployment script...\"",
-              "bash deploy-flutter-webrtc-server.sh -b ${{ env.S3_BUCKET }} -f ${{ needs.build.outputs.zip_filename }} -s ${{ env.SERVICE_NAME }}",
+              "echo \"==> Executing deployment script as ubuntu user...\"",
+              "su - ubuntu -c \"export PATH=/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:\\${PATH}; export GO111MODULE=on; export CGO_ENABLED=0; cd /home/ubuntu && bash deploy-flutter-webrtc-server.sh -b ${{ env.S3_BUCKET }} -f ${{ needs.build.outputs.zip_filename }} -s ${{ env.SERVICE_NAME }}\"",
               "echo \"\"",
               "echo \"✅ Deployment completed successfully\""
             ]' \
