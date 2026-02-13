@@ -106,11 +106,17 @@ sudo rm -rf "${STAGING_DIR}"
 mkdir -p "${STAGING_DIR}"
 unzip -o "./${ZIP_FILE}" -d "${STAGING_DIR}"
 
-
-# Expect folder flutter-webrtc-server-master inside zip; otherwise detect first dir
+# Check if files were extracted to a subdirectory or directly to staging
 EXTRACTED_DIR="${STAGING_DIR}/flutter-webrtc-server-master"
 if [[ ! -d "${EXTRACTED_DIR}" ]]; then
-  EXTRACTED_DIR="$(find "${STAGING_DIR}" -mindepth 1 -maxdepth 1 -type d | head -n 1 || true)"
+  # No subdirectory found, check if files are directly in staging
+  if [[ -f "${STAGING_DIR}/go.mod" ]] || [[ -f "${STAGING_DIR}/${BUILD_OUTPUT}" ]]; then
+    echo "==> Files extracted directly to staging, using staging as source"
+    EXTRACTED_DIR="${STAGING_DIR}"
+  else
+    # Try to find first directory
+    EXTRACTED_DIR="$(find "${STAGING_DIR}" -mindepth 1 -maxdepth 1 -type d | head -n 1 || true)"
+  fi
 fi
 
 if [[ -z "${EXTRACTED_DIR}" || ! -d "${EXTRACTED_DIR}" ]]; then
@@ -119,9 +125,16 @@ if [[ -z "${EXTRACTED_DIR}" || ! -d "${EXTRACTED_DIR}" ]]; then
 fi
 
 echo "==> Promoting extracted dir to target: ${TARGET_DIR}"
-sudo mv "${EXTRACTED_DIR}" "${TARGET_DIR}"
 
-# Ensure ubuntu user owns working tree (matches your old script expectations)
+# If EXTRACTED_DIR is staging itself, copy contents instead of moving the directory
+if [[ "${EXTRACTED_DIR}" == "${STAGING_DIR}" ]]; then
+  sudo mkdir -p "${TARGET_DIR}"
+  sudo cp -a "${STAGING_DIR}/." "${TARGET_DIR}/"
+else
+  sudo mv "${EXTRACTED_DIR}" "${TARGET_DIR}"
+fi
+
+# Ensure ubuntu user owns working tree
 sudo chown -R ubuntu:ubuntu "${TARGET_DIR}"
 
 cd "${TARGET_DIR}"
