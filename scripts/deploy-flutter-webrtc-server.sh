@@ -124,9 +124,17 @@ sudo mv "${EXTRACTED_DIR}" "${TARGET_DIR}"
 # Ensure ubuntu user owns working tree (matches your old script expectations)
 sudo chown -R ubuntu:ubuntu "${TARGET_DIR}"
 
-echo "==> Building Go binary..."
 cd "${TARGET_DIR}"
-go build -o "${BUILD_OUTPUT}" "${GO_MAIN_PATH}"
+
+# Check if binary already exists (pre-compiled from GitHub Actions)
+if [[ -f "${BUILD_OUTPUT}" ]]; then
+  echo "==> Binary already exists (pre-compiled), skipping build..."
+  chmod +x "${BUILD_OUTPUT}"
+  ls -lh "${BUILD_OUTPUT}"
+else
+  echo "==> Building Go binary..."
+  go build -o "${BUILD_OUTPUT}" "${GO_MAIN_PATH}"
+fi
 
 # TLS cert copy
 LE_DOMAIN_PATH="/etc/letsencrypt/live/flutter-webrtc-develop2.lgmk-eng.com"
