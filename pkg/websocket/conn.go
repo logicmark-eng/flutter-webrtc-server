@@ -11,23 +11,34 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-const pingPeriod = 5 * time.Second
-const pongWait = 3 * pingPeriod // If no pong received within 3 ping cycles, connection is dead
+const defaultPingInterval = 5 * time.Second
+const defaultPongTimeout = 3 * defaultPingInterval
 
 type WebSocketConn struct {
 	emission.Emitter
-	socket    *websocket.Conn
-	mutex     *sync.Mutex
-	closed    bool
-	closeOnce sync.Once
+	socket       *websocket.Conn
+	mutex        *sync.Mutex
+	closed       bool
+	closeOnce    sync.Once
+	pingInterval time.Duration
+	pongTimeout  time.Duration
 }
 
-func NewWebSocketConn(socket *websocket.Conn) *WebSocketConn {
+func NewWebSocketConn(socket *websocket.Conn, pingInterval, pongTimeout time.Duration) *WebSocketConn {
+	if pingInterval <= 0 {
+		pingInterval = defaultPingInterval
+	}
+	if pongTimeout <= 0 {
+		pongTimeout = defaultPongTimeout
+	}
+
 	var conn WebSocketConn
 	conn.Emitter = *emission.NewEmitter()
 	conn.socket = socket
 	conn.mutex = new(sync.Mutex)
 	conn.closed = false
+	conn.pingInterval = pingInterval
+	conn.pongTimeout = pongTimeout
 	conn.socket.SetCloseHandler(func(code int, text string) error {
 		logger.Warnf("%s [%d]", text, code)
 		conn.emitClose(code, text)
@@ -35,7 +46,7 @@ func NewWebSocketConn(socket *websocket.Conn) *WebSocketConn {
 	})
 	// Reset read deadline on pong receipt (browser sends pong automatically)
 	conn.socket.SetPongHandler(func(appData string) error {
-		conn.socket.SetReadDeadline(time.Now().Add(pongWait))
+		conn.socket.SetReadDeadline(time.Now().Add(conn.pongTimeout))
 		return nil
 	})
 	return &conn
@@ -44,11 +55,12 @@ func NewWebSocketConn(socket *websocket.Conn) *WebSocketConn {
 func (conn *WebSocketConn) ReadMessage() {
 	in := make(chan []byte)
 	stop := make(chan struct{})
-	pingTicker := time.NewTicker(pingPeriod)
+	pingTicker := time.NewTicker(conn.pingInterval)
 
 	var c = conn.socket
 	// Set initial read deadline; subsequent resets happen via pong handler
-	c.SetReadDeadline(time.Now().Add(pongWait))
+	// or when any application message is received
+	c.SetReadDeadline(time.Now().Add(conn.pongTimeout))
 	go func() {
 		for {
 			_, message, err := c.ReadMessage()
@@ -64,6 +76,10 @@ func (conn *WebSocketConn) ReadMessage() {
 				close(stop)
 				break
 			}
+			// Any received message proves the client is alive — reset deadline.
+			// This supports clients that respond with application-level keepalive
+			// instead of (or in addition to) WebSocket pong frames.
+			c.SetReadDeadline(time.Now().Add(conn.pongTimeout))
 			in <- message
 		}
 	}()
@@ -73,7 +89,7 @@ func (conn *WebSocketConn) ReadMessage() {
 		case _ = <-pingTicker.C:
 			// Send WebSocket ping frame for connection liveness detection
 			conn.mutex.Lock()
-			pingErr := conn.socket.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(5*time.Second))
+			pingErr := conn.socket.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(conn.pingInterval))
 			conn.mutex.Unlock()
 			if pingErr != nil {
 				logger.Errorf("WebSocket ping failed: %v", pingErr)
@@ -82,7 +98,10 @@ func (conn *WebSocketConn) ReadMessage() {
 				conn.socket.Close()
 				return
 			}
-			// Also send application-level keepalive for client awareness
+			// Send application-level keepalive for clients that may not
+			// support WebSocket ping/pong (e.g., some Python libraries,
+			// custom embedded clients). Clients SHOULD respond with
+			// {"type":"keepalive"} to keep the connection alive.
 			if err := conn.Send(`{"type":"keepalive"}`); err != nil {
 				logger.Errorf("Keepalive has failed")
 				pingTicker.Stop()

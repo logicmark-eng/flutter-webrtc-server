@@ -336,7 +336,8 @@ func (s *Signaler) HandleNewWebSocket(conn *websocket.WebSocketConn, request *ht
 			}
 
 		case Keepalive:
-			s.Send(conn, request)
+			// Receiving the message is sufficient — it resets the read deadline.
+			// No response needed.
 		default:
 			logger.Warnf("Unknown request %v", request)
 		}

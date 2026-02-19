@@ -65,8 +65,9 @@ mkcert -key-file configs/certs/key.pem -cert-file configs/certs/cert.pem localho
 
 2. **Signaler** (`pkg/signaler/`)
    - Core signaling logic that manages peer connections
-   - Maintains maps of active peers and sessions
+   - Maintains a map of active peers (protected by `sync.RWMutex`)
    - Routes WebRTC signaling messages (offer/answer/candidate) between peers
+   - Handles peer registration with duplicate ID detection (closes old connection)
    - Implements REST API for TURN credentials using HMAC-SHA1
 
 3. **TURN Server** (`pkg/turn/`)
@@ -84,17 +85,60 @@ mkcert -key-file configs/certs/key.pem -cert-file configs/certs/cert.pem localho
 5. Signaler routes messages between peers based on "to" field
 6. TURN credentials obtained via `/api/turn?service=turn&username=xxx`
 
+### Connection Lifecycle & Disconnect Handling
+
+**Intentional hangup (bye):**
+1. Client sends `{"type":"bye", "data":{"session_id":"...", "from":"..."}}`
+2. Server parses session ID (`smaller_id~larger_id`), identifies the remote peer
+3. Server forwards bye message to remote peer only (not echoed to sender)
+4. Remote peer cleans up WebRTC resources (PeerConnection, media tracks, call state)
+
+**Unexpected disconnection (crash/network loss):**
+1. Server detects via read deadline timeout (no pong or message within `pong_timeout`)
+2. Server emits close event (deduplicated via `sync.Once`)
+3. Close handler atomically finds and removes the peer under a single write lock
+4. Server sends `{"type":"leave", "data":{"id":"<peer_id>"}}` to all remaining peers
+5. Server broadcasts updated peer list to all remaining peers
+
+**Duplicate peer ID:**
+If a peer registers with an ID already in use, the server closes the old connection before registering the new one.
+
+### Keepalive Protocol
+
+The server uses a dual-path liveness detection mechanism that works across all client types (browsers, Flutter mobile, Python/embedded devices).
+
+**Server behavior** (every `ping_interval` seconds):
+1. Sends a WebSocket ping frame (protocol-level, RFC 6455)
+2. Sends a JSON `{"type":"keepalive"}` message (application-level)
+3. If no data (pong frame or any text message) is received within `pong_timeout` seconds, closes the connection
+
+**Dual-path deadline reset:**
+- Path A: Pong frame received → read deadline reset (automatic for browsers, dart:io, most Python libraries)
+- Path B: Any application message received → read deadline reset (works for ALL client types)
+
+**Client requirements by type:**
+
+| Client | Ping/pong auto? | Must respond to JSON keepalive? |
+|--------|------------------|---------------------------------|
+| Browser (HTML5 WebSocket) | Yes | Recommended as insurance |
+| Flutter mobile (dart:io) | Yes | Recommended as insurance |
+| Python `websockets` | Yes (default) | Recommended as insurance |
+| Python `websocket-client` | Depends on config | Yes |
+| Custom / embedded | Unknown | Yes — required |
+
+All clients SHOULD respond to `{"type":"keepalive"}` by sending `{"type":"keepalive"}` back. This ensures connectivity regardless of WebSocket library ping/pong support. The server does NOT echo keepalive messages back — receiving the client's keepalive is sufficient to prove liveness.
+
 ### WebSocket Message Types
 
-- `new`: Register new peer
-- `offer`: WebRTC offer with SDP
-- `answer`: WebRTC answer with SDP
-- `candidate`: ICE candidate
-- `bye`: End session
-- `leave`: Peer leaving
-- `keepalive`: Keep connection alive
-- `peers`: Broadcast of active peer list (server → client)
-- `error`: Error response (server → client)
+- `new`: Register new peer (client → server). Data: `{id, name, user_agent}`
+- `offer`: WebRTC offer with SDP (client → server → client)
+- `answer`: WebRTC answer with SDP (client → server → client)
+- `candidate`: ICE candidate (client → server → client)
+- `bye`: End session (client → server → remote peer). Server routes only to the remote peer, not back to the sender. Data includes `from`, `to`, `session_id`
+- `leave`: Peer disconnected (server → all remaining clients). Data: `{id: "<peer_id>"}`
+- `keepalive`: Connection liveness (bidirectional). Server sends `{"type":"keepalive"}` periodically; clients MUST respond with `{"type":"keepalive"}` to stay connected (see Keepalive Protocol below)
+- `peers`: Broadcast of active peer list (server → all clients)
+- `error`: Error response (server → client). Data: `{request, reason}`
 
 ### Configuration
 
@@ -113,6 +157,10 @@ Edit `configs/config.ini`:
 - `port`: TURN server UDP port (default: 19302)
 - `port_tcp`: TURN server TCP port (default: 19303) - provides better firewall traversal
 - `realm`: TURN realm (default: flutter-webrtc)
+
+**[websocket]**
+- `ping_interval`: Seconds between server ping frames and keepalive messages (default: 5)
+- `pong_timeout`: Seconds to wait for any client response before disconnecting (default: 15)
 
 ### TURN Credential Security
 
@@ -134,10 +182,11 @@ The server implements [draft-uberti-behave-turn-rest-00](https://tools.ietf.org/
 
 `cmd/server/main.go` orchestrates initialization:
 1. Loads config from `configs/config.ini`
-2. Creates TURN server instance
+2. Creates TURN server instance with `[turn]` config
 3. Creates signaler and links TURN auth handler
 4. Creates WebSocket server with signaler handlers
-5. Starts HTTPS server (blocking)
+5. Reads `[websocket]` config (ping_interval, pong_timeout) and applies to WebSocket server
+6. Starts HTTPS server (blocking)
 
 ### Web Client
 

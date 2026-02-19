@@ -556,6 +556,17 @@
                     log(`WebSocket disconnected (code=${event.code}, reason=${event.reason || 'none'})`, 'info');
                     document.getElementById('wsStatus').textContent = 'Disconnected';
                     document.getElementById('wsStatus').className = 'disconnected';
+                    // Full cleanup — this is the catch-all for any disconnection reason
+                    if (pc) { pc.close(); pc = null; }
+                    cleanupResources();
+                    inCall = false;
+                    currentSessionId = null;
+                    remoteDescriptionSet = false;
+                    pendingCandidates = [];
+                    updateStatus('iceState', 'Disconnected', 'disconnected');
+                    updateStatus('connectionState', '-', '');
+                    document.getElementById('onlinePeers').textContent = 'None detected';
+                    document.getElementById('onlinePeers').style.color = '#888';
                 };
 
                 ws.onerror = (err) => {
@@ -673,9 +684,13 @@
                                 break;
                             
                             case 'keepalive':
-                                // Server sends keepalive for app-level awareness.
-                                // Connection liveness is handled by WebSocket ping/pong
-                                // frames (browser responds automatically).
+                                // Respond to server keepalive to confirm liveness.
+                                // This works alongside WebSocket ping/pong (which
+                                // browsers handle automatically) to support all
+                                // client types (Python, embedded devices, etc.).
+                                if (ws && ws.readyState === WebSocket.OPEN) {
+                                    ws.send(JSON.stringify({type: 'keepalive'}));
+                                }
                                 break;
 
                             case 'error':
