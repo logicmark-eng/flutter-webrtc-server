@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"time"
 
 	"github.com/flutter-webrtc/flutter-webrtc-server/pkg/logger"
 	"github.com/flutter-webrtc/flutter-webrtc-server/pkg/signaler"
@@ -50,12 +51,23 @@ func main() {
 
 	htmlRoot := cfg.Section("general").Key("html_root").String()
 
+	pingInterval, err := cfg.Section("websocket").Key("ping_interval").Int()
+	if err != nil {
+		pingInterval = 5
+	}
+	pongTimeout, err := cfg.Section("websocket").Key("pong_timeout").Int()
+	if err != nil {
+		pongTimeout = 15
+	}
+
 	config := websocket.DefaultConfig()
 	config.Host = bindAddress
 	config.Port = port
 	config.CertFile = sslCert
 	config.KeyFile = sslKey
 	config.HTMLRoot = htmlRoot
+	config.PingInterval = time.Duration(pingInterval) * time.Second
+	config.PongTimeout = time.Duration(pongTimeout) * time.Second
 
 	wsServer.Bind(config)
 }

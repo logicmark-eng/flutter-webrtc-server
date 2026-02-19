@@ -108,12 +108,12 @@ func (s Signaler) authHandler(username string, realm string, srcAddr net.Addr) (
 }
 
 // NotifyPeersUpdate broadcasts the current peer list to all connected peers.
-func (s *Signaler) NotifyPeersUpdate(conn *websocket.WebSocketConn, peers map[string]Peer) {
+func (s *Signaler) NotifyPeersUpdate() {
 	// Collect data under the lock
 	s.peerMutex.RLock()
-	infos := make([]PeerInfo, 0, len(peers))
-	conns := make([]*websocket.WebSocketConn, 0, len(peers))
-	for _, peer := range peers {
+	infos := make([]PeerInfo, 0, len(s.peers))
+	conns := make([]*websocket.WebSocketConn, 0, len(s.peers))
+	for _, peer := range s.peers {
 		infos = append(infos, peer.info)
 		conns = append(conns, peer.conn)
 	}
@@ -250,7 +250,7 @@ func (s *Signaler) HandleNewWebSocket(conn *websocket.WebSocketConn, request *ht
 				info: info,
 			}
 			s.peerMutex.Unlock()
-			s.NotifyPeersUpdate(conn, s.peers)
+			s.NotifyPeersUpdate()
 			break
 		case Leave:
 		case Offer:
@@ -336,7 +336,8 @@ func (s *Signaler) HandleNewWebSocket(conn *websocket.WebSocketConn, request *ht
 			}
 
 		case Keepalive:
-			s.Send(conn, request)
+			// Receiving the message is sufficient — it resets the read deadline.
+			// No response needed.
 		default:
 			logger.Warnf("Unknown request %v", request)
 		}
@@ -382,6 +383,6 @@ func (s *Signaler) HandleNewWebSocket(conn *websocket.WebSocketConn, request *ht
 		}
 
 		// Notify all remaining peers of the updated peer list
-		s.NotifyPeersUpdate(conn, s.peers)
+		s.NotifyPeersUpdate()
 	})
 }

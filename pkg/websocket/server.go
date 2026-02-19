@@ -3,6 +3,7 @@ package websocket
 import (
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/flutter-webrtc/flutter-webrtc-server/pkg/logger"
 	"github.com/gorilla/websocket"
@@ -16,6 +17,8 @@ type WebSocketServerConfig struct {
 	HTMLRoot       string
 	WebSocketPath  string
 	TurnServerPath string
+	PingInterval   time.Duration
+	PongTimeout    time.Duration
 }
 
 func DefaultConfig() WebSocketServerConfig {
@@ -29,6 +32,7 @@ func DefaultConfig() WebSocketServerConfig {
 }
 
 type WebSocketServer struct {
+	config           WebSocketServerConfig
 	handleWebSocket  func(ws *WebSocketConn, request *http.Request)
 	handleTurnServer func(writer http.ResponseWriter, request *http.Request)
 	// Websocket upgrader
@@ -57,7 +61,7 @@ func (server *WebSocketServer) handleWebSocketRequest(writer http.ResponseWriter
 	if err != nil {
 		logger.Panicf("%v", err)
 	}
-	wsTransport := NewWebSocketConn(socket)
+	wsTransport := NewWebSocketConn(socket, server.config.PingInterval, server.config.PongTimeout)
 	server.handleWebSocket(wsTransport, request)
 	wsTransport.ReadMessage()
 }
@@ -68,6 +72,7 @@ func (server *WebSocketServer) handleTurnServerRequest(writer http.ResponseWrite
 
 // Bind .
 func (server *WebSocketServer) Bind(cfg WebSocketServerConfig) {
+	server.config = cfg
 	// Websocket handle func
 	http.HandleFunc(cfg.WebSocketPath, server.handleWebSocketRequest)
 	http.HandleFunc(cfg.TurnServerPath, server.handleTurnServerRequest)

@@ -387,10 +387,22 @@
                 const className = state === 'connected' ? 'connected' :
                                   state === 'connecting' ? 'connecting' : 'disconnected';
                 updateStatus('connectionState', state, className);
-                
+
                 if (state === 'connected') {
                     log('Peer connected!', 'success');
                     startStatsMonitoring();
+                } else if (state === 'failed') {
+                    // WebRTC-level fallback: clean up if the ICE connection fails.
+                    // This handles cases where the signaling server's "leave" message
+                    // is unavailable (e.g., server down during a call).
+                    log('WebRTC connection failed — cleaning up', 'error');
+                    inCall = false;
+                    currentSessionId = null;
+                    remoteDescriptionSet = false;
+                    pendingCandidates = [];
+                    if (pc) { pc.close(); pc = null; }
+                    cleanupResources();
+                    updateStatus('iceState', 'Failed', 'disconnected');
                 }
             };
 
@@ -556,6 +568,17 @@
                     log(`WebSocket disconnected (code=${event.code}, reason=${event.reason || 'none'})`, 'info');
                     document.getElementById('wsStatus').textContent = 'Disconnected';
                     document.getElementById('wsStatus').className = 'disconnected';
+                    // Reset call state FIRST, then clean up resources
+                    inCall = false;
+                    currentSessionId = null;
+                    remoteDescriptionSet = false;
+                    pendingCandidates = [];
+                    if (pc) { pc.close(); pc = null; }
+                    cleanupResources();
+                    updateStatus('iceState', 'Disconnected', 'disconnected');
+                    updateStatus('connectionState', '-', '');
+                    document.getElementById('onlinePeers').textContent = 'None detected';
+                    document.getElementById('onlinePeers').style.color = '#888';
                 };
 
                 ws.onerror = (err) => {
@@ -642,15 +665,15 @@
                                 const currentRemotePeer = document.getElementById('remotePeerId').value.trim();
                                 if (inCall && leftPeerId === currentRemotePeer) {
                                     log('Remote peer disconnected during call — cleaning up', 'info');
+                                    inCall = false;
+                                    currentSessionId = null;
+                                    remoteDescriptionSet = false;
+                                    pendingCandidates = [];
                                     if (pc) {
                                         pc.close();
                                         pc = null;
                                     }
                                     cleanupResources();
-                                    inCall = false;
-                                    currentSessionId = null;
-                                    remoteDescriptionSet = false;
-                                    pendingCandidates = [];
                                     updateStatus('iceState', 'Peer Disconnected', 'disconnected');
                                     updateStatus('connectionState', '-', '');
                                 }
@@ -659,23 +682,29 @@
                             case 'bye':
                                 const byeData = data.data || data;
                                 log(`Call ended by ${byeData.from || 'remote peer'}`, 'info');
+                                // Reset call state FIRST — before cleanup that might
+                                // throw or trigger synchronous event handlers
+                                inCall = false;
+                                currentSessionId = null;
+                                remoteDescriptionSet = false;
+                                pendingCandidates = [];
                                 if (pc) {
                                     pc.close();
                                     pc = null;
                                 }
                                 cleanupResources();
-                                inCall = false;
-                                currentSessionId = null;
-                                remoteDescriptionSet = false;
-                                pendingCandidates = [];
                                 updateStatus('iceState', 'Call Ended', 'disconnected');
                                 updateStatus('connectionState', '-', '');
                                 break;
                             
                             case 'keepalive':
-                                // Server sends keepalive for app-level awareness.
-                                // Connection liveness is handled by WebSocket ping/pong
-                                // frames (browser responds automatically).
+                                // Respond to server keepalive to confirm liveness.
+                                // This works alongside WebSocket ping/pong (which
+                                // browsers handle automatically) to support all
+                                // client types (Python, embedded devices, etc.).
+                                if (ws && ws.readyState === WebSocket.OPEN) {
+                                    ws.send(JSON.stringify({type: 'keepalive'}));
+                                }
                                 break;
 
                             case 'error':
@@ -926,16 +955,18 @@
             }
             ws = null;
 
+            // Reset call state FIRST, then clean up resources
+            inCall = false;
+            currentSessionId = null;
+            remoteDescriptionSet = false;
+            pendingCandidates = [];
+
             if (pc) {
                 pc.close();
                 pc = null;
             }
 
             cleanupResources();
-            inCall = false;
-            currentSessionId = null;
-            remoteDescriptionSet = false;
-            pendingCandidates = [];
             document.getElementById('onlinePeers').textContent = 'None detected';
             document.getElementById('onlinePeers').style.color = '#888';
         }
@@ -962,16 +993,18 @@
                 }, remotePeerId, currentSessionId);
             }
 
+            // Reset call state FIRST, then clean up resources
+            inCall = false;
+            currentSessionId = null;
+            remoteDescriptionSet = false;
+            pendingCandidates = [];
+
             if (pc) {
                 pc.close();
                 pc = null;
             }
 
             cleanupResources();
-            inCall = false;
-            currentSessionId = null;
-            remoteDescriptionSet = false;
-            pendingCandidates = [];
             log('Call ended', 'info');
             updateStatus('iceState', 'Disconnected', 'disconnected');
             updateStatus('connectionState', '-', '');
