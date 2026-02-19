@@ -387,10 +387,22 @@
                 const className = state === 'connected' ? 'connected' :
                                   state === 'connecting' ? 'connecting' : 'disconnected';
                 updateStatus('connectionState', state, className);
-                
+
                 if (state === 'connected') {
                     log('Peer connected!', 'success');
                     startStatsMonitoring();
+                } else if (state === 'failed') {
+                    // WebRTC-level fallback: clean up if the ICE connection fails.
+                    // This handles cases where the signaling server's "leave" message
+                    // is unavailable (e.g., server down during a call).
+                    log('WebRTC connection failed — cleaning up', 'error');
+                    if (pc) { pc.close(); pc = null; }
+                    cleanupResources();
+                    inCall = false;
+                    currentSessionId = null;
+                    remoteDescriptionSet = false;
+                    pendingCandidates = [];
+                    updateStatus('iceState', 'Failed', 'disconnected');
                 }
             };
 

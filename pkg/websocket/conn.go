@@ -56,6 +56,7 @@ func (conn *WebSocketConn) ReadMessage() {
 	in := make(chan []byte)
 	stop := make(chan struct{})
 	pingTicker := time.NewTicker(conn.pingInterval)
+	defer pingTicker.Stop()
 
 	var c = conn.socket
 	// Set initial read deadline; subsequent resets happen via pong handler
@@ -93,7 +94,6 @@ func (conn *WebSocketConn) ReadMessage() {
 			conn.mutex.Unlock()
 			if pingErr != nil {
 				logger.Errorf("WebSocket ping failed: %v", pingErr)
-				pingTicker.Stop()
 				conn.emitClose(1006, "ping failed")
 				conn.socket.Close()
 				return
@@ -104,7 +104,6 @@ func (conn *WebSocketConn) ReadMessage() {
 			// {"type":"keepalive"} to keep the connection alive.
 			if err := conn.Send(`{"type":"keepalive"}`); err != nil {
 				logger.Errorf("Keepalive has failed")
-				pingTicker.Stop()
 				conn.emitClose(1006, "keepalive failed")
 				conn.socket.Close()
 				return
@@ -122,7 +121,9 @@ func (conn *WebSocketConn) ReadMessage() {
 
 func (conn *WebSocketConn) emitClose(code int, text string) {
 	conn.closeOnce.Do(func() {
+		conn.mutex.Lock()
 		conn.closed = true
+		conn.mutex.Unlock()
 		conn.Emit("close", code, text)
 	})
 }
