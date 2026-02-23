@@ -46,6 +46,7 @@ const (
 	Candidate Method = "candidate"
 	Leave     Method = "leave"
 	Keepalive Method = "keepalive"
+	Ping      Method = "ping"
 )
 
 type Request struct {
@@ -75,6 +76,11 @@ type Error struct {
 	Reason  string `json:"reason"`
 }
 
+type PingPong struct {
+	From    string `json:"from"`
+	To      string `json:"to"`
+}
+
 type Signaler struct {
 	peers     map[string]Peer
 	turn      *turn.TurnServer
@@ -88,7 +94,9 @@ func NewSignaler(turn *turn.TurnServer) *Signaler {
 		turn:      turn,
 		expresMap: util.NewExpiredMap(),
 	}
-	signaler.turn.AuthHandler = signaler.authHandler
+	if turn != nil {
+		signaler.turn.AuthHandler = signaler.authHandler
+	}
 	return signaler
 }
 
@@ -133,6 +141,10 @@ func (s *Signaler) NotifyPeersUpdate() {
 // HandleTurnServerCredentials .
 // https://tools.ietf.org/html/draft-uberti-behave-turn-rest-00
 func (s *Signaler) HandleTurnServerCredentials(writer http.ResponseWriter, request *http.Request) {
+	if s.turn == nil {
+		http.Error(writer, "TURN server not configured", http.StatusServiceUnavailable)
+		return
+	}
 	writer.Header().Set("Content-Type", "application/json")
 	writer.Header().Set("Access-Control-Allow-Origin", "*")
 
@@ -338,6 +350,33 @@ func (s *Signaler) HandleNewWebSocket(conn *websocket.WebSocketConn, request *ht
 		case Keepalive:
 			// Receiving the message is sufficient — it resets the read deadline.
 			// No response needed.
+		case Ping:
+			{
+				var pingPong PingPong
+				err := json.Unmarshal(body, &pingPong)
+				if err != nil {
+					logger.Errorf("Unmarshal "+string(request.Type)+" got error %v", err)
+					return
+				}
+				to := pingPong.To
+				s.peerMutex.RLock()
+				peer, ok := s.peers[to]
+				s.peerMutex.RUnlock()
+				if !ok {
+					msg := Request{
+						Type: "error",
+						Data: Error{
+							Request: string(request.Type),
+							Reason:  "Peer [" + to + "] not found ",
+						},
+					}
+					s.Send(conn, msg)
+					return
+				}
+				s.Send(peer.conn, request)
+			}
+			break
+
 		default:
 			logger.Warnf("Unknown request %v", request)
 		}

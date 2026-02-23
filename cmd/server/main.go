@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"strings"
 	"time"
 
 	"github.com/flutter-webrtc/flutter-webrtc-server/pkg/logger"
@@ -60,6 +61,9 @@ func main() {
 		pongTimeout = 15
 	}
 
+	httpEnv := os.Getenv("WEBRTC_HTTP")
+	httpMode := strings.EqualFold(httpEnv, "true") || httpEnv == "1"
+
 	config := websocket.DefaultConfig()
 	config.Host = bindAddress
 	config.Port = port
@@ -68,6 +72,7 @@ func main() {
 	config.HTMLRoot = htmlRoot
 	config.PingInterval = time.Duration(pingInterval) * time.Second
 	config.PongTimeout = time.Duration(pongTimeout) * time.Second
+	config.HTTPMode = httpMode
 
 	wsServer.Bind(config)
 }

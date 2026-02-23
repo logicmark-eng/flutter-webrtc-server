@@ -19,6 +19,7 @@ type WebSocketServerConfig struct {
 	TurnServerPath string
 	PingInterval   time.Duration
 	PongTimeout    time.Duration
+	HTTPMode       bool // run plain HTTP instead of HTTPS (useful for local dev/testing)
 }
 
 func DefaultConfig() WebSocketServerConfig {
@@ -45,6 +46,7 @@ func NewWebSocketServer(
 	var server = &WebSocketServer{
 		handleWebSocket:  wsHandler,
 		handleTurnServer: turnServerHandler,
+		config:           DefaultConfig(),
 	}
 	server.upgrader = websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool {
@@ -52,6 +54,22 @@ func NewWebSocketServer(
 		},
 	}
 	return server
+}
+
+// Configure sets the server config without starting the server.
+// Call this before Handler() when embedding the server in tests or custom HTTP stacks.
+func (server *WebSocketServer) Configure(cfg WebSocketServerConfig) {
+	server.config = cfg
+}
+
+// Handler returns an http.Handler with all routes registered on a private ServeMux.
+// Call Configure (or Bind) before using this.
+func (server *WebSocketServer) Handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc(server.config.WebSocketPath, server.handleWebSocketRequest)
+	mux.HandleFunc(server.config.TurnServerPath, server.handleTurnServerRequest)
+	mux.Handle("/", http.FileServer(http.Dir(server.config.HTMLRoot)))
+	return mux
 }
 
 func (server *WebSocketServer) handleWebSocketRequest(writer http.ResponseWriter, request *http.Request) {
@@ -70,14 +88,15 @@ func (server *WebSocketServer) handleTurnServerRequest(writer http.ResponseWrite
 	server.handleTurnServer(writer, request)
 }
 
-// Bind .
+// Bind configures and starts the server (blocking). Use HTTPMode=true for plain HTTP.
 func (server *WebSocketServer) Bind(cfg WebSocketServerConfig) {
-	server.config = cfg
-	// Websocket handle func
-	http.HandleFunc(cfg.WebSocketPath, server.handleWebSocketRequest)
-	http.HandleFunc(cfg.TurnServerPath, server.handleTurnServerRequest)
-	http.Handle("/", http.FileServer(http.Dir(cfg.HTMLRoot)))
+	server.Configure(cfg)
+	addr := cfg.Host + ":" + strconv.Itoa(cfg.Port)
+	mux := server.Handler()
 	logger.Infof("Flutter WebRTC Server listening on: %s:%d", cfg.Host, cfg.Port)
-	// http.ListenAndServe(cfg.Host+":"+strconv.Itoa(cfg.Port), nil)
-	panic(http.ListenAndServeTLS(cfg.Host+":"+strconv.Itoa(cfg.Port), cfg.CertFile, cfg.KeyFile, nil))
+	if cfg.HTTPMode {
+		panic(http.ListenAndServe(addr, mux))
+	} else {
+		panic(http.ListenAndServeTLS(addr, cfg.CertFile, cfg.KeyFile, mux))
+	}
 }

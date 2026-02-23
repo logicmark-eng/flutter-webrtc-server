@@ -24987,7 +24987,8 @@
       var _ = this;
       _._encoder = t0;
       _._decoder = t1;
-      _._selfId = t2;
+      console.log("signaling "+self+" t2 " + t2);
+      _._selfId = "c8840598-81aa-4bef-b11d-3b38ab178683";
       _._socket = null;
       _._signaling$_host = t3;
       _._turnCredential = null;
