@@ -107526,6 +107526,10 @@
                   // goto case
                   $async$goto = 10;
                   break;
+                case "ping":
+                  // goto case
+                  $async$goto = 22;
+                  break;
                 default:
                   // goto default
                   $async$goto = 11;
@@ -107656,12 +107660,20 @@
               break;
             case 10:
               // case
-              P.print("keepalive response!");
+              $async$self._send$2("keepalive", P.LinkedHashMap_LinkedHashMap$_literal([], type$.legacy_String, type$.legacy_String));
               // goto after switch
               $async$goto = 3;
               break;
             case 11:
               // default
+              // goto after switch
+              $async$goto = 3;
+              break;
+            case 22:
+              // case "ping" — reply with pong, swapping from/to
+              t1 = J.getInterceptor$asx(data);
+              t2 = type$.legacy_String;
+              $async$self._send$2("pong", P.LinkedHashMap_LinkedHashMap$_literal(["from", t1.$index(data, "to"), "to", t1.$index(data, "from")], t2, t2));
               // goto after switch
               $async$goto = 3;
               break;

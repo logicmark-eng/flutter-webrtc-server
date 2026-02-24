@@ -47,6 +47,7 @@ const (
 	Leave     Method = "leave"
 	Keepalive Method = "keepalive"
 	Ping      Method = "ping"
+	Pong      Method = "pong"
 )
 
 type Request struct {
@@ -351,6 +352,8 @@ func (s *Signaler) HandleNewWebSocket(conn *websocket.WebSocketConn, request *ht
 			// Receiving the message is sufficient — it resets the read deadline.
 			// No response needed.
 		case Ping:
+			fallthrough
+		case Pong:
 			{
 				var pingPong PingPong
 				err := json.Unmarshal(body, &pingPong)

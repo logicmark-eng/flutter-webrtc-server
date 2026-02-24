@@ -330,6 +330,42 @@ func TestPingRouting(t *testing.T) {
 	_ = connB
 }
 
+// TestPongRouting verifies the full ping→pong round-trip:
+// A sends ping to B → B sends pong to A → A receives pong, B does not.
+func TestPongRouting(t *testing.T) {
+	ts := newTestServer(t, 30*time.Second, 60*time.Second)
+	connA, connB, mcA, mcB := setupTwoPeers(t, ts, "a", "b")
+
+	// A sends ping to B
+	sendJSON(t, connA, map[string]interface{}{
+		"type": "ping",
+		"data": map[string]interface{}{"from": "a", "to": "b"},
+	})
+
+	// B receives the ping and replies with a pong (swapping from/to)
+	mcB.readType(t, "ping", 2*time.Second)
+	sendJSON(t, connB, map[string]interface{}{
+		"type": "pong",
+		"data": map[string]interface{}{"from": "b", "to": "a"},
+	})
+
+	// A receives the pong
+	msg := mcA.readType(t, "pong", 2*time.Second)
+	data := msg["data"].(map[string]interface{})
+	if data["from"] != "b" {
+		t.Errorf("pong.from: want b, got %v", data["from"])
+	}
+	if data["to"] != "a" {
+		t.Errorf("pong.to: want a, got %v", data["to"])
+	}
+
+	// B must NOT receive its own pong echoed back
+	mcB.assertNoType(t, "pong", 300*time.Millisecond)
+
+	_ = connA
+	_ = connB
+}
+
 // TestByeRouting verifies that a "bye" message is routed only to the remote peer
 // and is NOT echoed back to the sender.
 func TestByeRouting(t *testing.T) {
