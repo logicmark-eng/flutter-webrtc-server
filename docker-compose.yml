@@ -1,0 +1,14 @@
+services:
+  signaling-server:
+    build: .
+    environment:
+      # Run in plain HTTP mode (no TLS certificates required for local dev/testing)
+      WEBRTC_HTTP: "false"
+    volumes:
+      # Mount the Docker-specific config over the default one
+      - ./configs/config.docker.ini:/app/configs/config.ini:ro
+    ports:
+      - "8086:8086"          # WebSocket + HTTP server
+      - "19302:19302/udp"    # TURN UDP
+      - "19303:19303/tcp"    # TURN TCP
+    restart: unless-stopped
