@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - master
+      - develop
     tags:
       - 'v*.*.*'
   workflow_dispatch:
@@ -37,11 +38,26 @@ jobs:
       - name: Determine environment
         id: environment
         run: |
-          # Currently only master branch exists, deploying to develop environment
-          ENVIRONMENT="develop"
+          BRANCH="${GITHUB_REF#refs/heads/}"
+
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            # Tags always deploy to main2 (production)
+            ENVIRONMENT="main2"
+          elif [[ "${BRANCH}" == "master" ]]; then
+            ENVIRONMENT="main2"
+          elif [[ "${BRANCH}" == "develop" ]]; then
+            ENVIRONMENT="develop"
+          elif [[ "${BRANCH}" == "qa" ]]; then
+            ENVIRONMENT="qa"
+          elif [[ "${BRANCH}" == "staging" ]]; then
+            ENVIRONMENT="staging"
+          else
+            echo "❌ Unknown branch: ${BRANCH}. No deployment configured."
+            exit 1
+          fi
 
           echo "environment=${ENVIRONMENT}" >> $GITHUB_OUTPUT
-          echo "🎯 Target environment: ${ENVIRONMENT}"
+          echo "🎯 Branch: ${BRANCH} → Environment: ${ENVIRONMENT}"
 
       - name: Determine version
         id: version
@@ -51,12 +67,12 @@ jobs:
           elif [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ github.event.inputs.version }}" ]]; then
             VERSION="${{ github.event.inputs.version }}"
           else
-            # Generate version from branch and commit
             BRANCH_NAME="${GITHUB_REF#refs/heads/}"
             VERSION="v0.0.0-${BRANCH_NAME}-${GITHUB_SHA::7}"
           fi
 
-          ZIP_FILENAME="flutter-webrtc-server-master${VERSION}.zip"
+          BRANCH_NAME="${GITHUB_REF#refs/heads/}"
+          ZIP_FILENAME="flutter-webrtc-server-${BRANCH_NAME}-${VERSION}.zip"
 
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "zip_filename=${ZIP_FILENAME}" >> $GITHUB_OUTPUT
