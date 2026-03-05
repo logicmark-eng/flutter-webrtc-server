@@ -1,11 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# ----------------------------------------------------------------------------
+# Flutter WebRTC Server — Deployment Script
+#
+# Installs/updates the server under /opt/flutter-webrtc/<environment>.
+# Runs the service as a dedicated system user (flutter-webrtc).
+# ----------------------------------------------------------------------------
+
 GO_MAIN_PATH="cmd/server/main.go"
 BUILD_OUTPUT="webrtc-server"
-BASE_DIR="/home/ubuntu"
+
+# Standard Linux directory layout
+APP_BASE_DIR="/opt/flutter-webrtc"
+DEPLOY_BASE_DIR="/var/lib/flutter-webrtc-deploy"
+BACKUP_BASE_DIR="/var/backups/flutter-webrtc"
 SYSTEMD_SERVICE_FILE="/etc/systemd/system/flutter-webrtc.service"
-LEGACY_DIR="${BASE_DIR}/flutter-webrtc-server-master"
+SERVICE_USER="flutter-webrtc"
+
+# Legacy path used before this refactor (develop only)
+LEGACY_DIR="/home/ubuntu/flutter-webrtc-server-master"
 
 ZIP_FILE=""
 S3_BUCKET=""
@@ -21,7 +35,7 @@ Usage:
 Required:
   -b   S3 bucket name (without s3://)
   -f   ZIP file name in the bucket (without prefix)
-  -d   Domain name for TLS certificates (e.g. flutter-webrtc.main2.logicmarkcloud.com)
+  -d   Domain name for TLS certificates
   -e   Environment name (develop | main2 | qa | staging)
 
 Optional:
@@ -45,12 +59,8 @@ while getopts ":b:f:s:d:e:h" opt; do
     d) DOMAIN="$OPTARG" ;;
     e) ENVIRONMENT="$OPTARG" ;;
     h) usage; exit 0 ;;
-    :)
-      echo "ERROR: Option -$OPTARG requires an argument." >&2
-      usage; exit 2 ;;
-    \?)
-      echo "ERROR: Invalid option -$OPTARG" >&2
-      usage; exit 2 ;;
+    :)  echo "ERROR: Option -$OPTARG requires an argument." >&2; usage; exit 2 ;;
+    \?) echo "ERROR: Invalid option -$OPTARG" >&2;            usage; exit 2 ;;
   esac
 done
 
@@ -61,9 +71,10 @@ fi
 
 # Environment-scoped paths
 S3_PREFIX="flutter-webrtc-server-${ENVIRONMENT}"
-TARGET_DIR="${BASE_DIR}/flutter-webrtc-server-${ENVIRONMENT}"
-WORKDIR="${BASE_DIR}/flutter-webrtc-deploy-${ENVIRONMENT}"
+TARGET_DIR="${APP_BASE_DIR}/${ENVIRONMENT}"
+WORKDIR="${DEPLOY_BASE_DIR}/${ENVIRONMENT}"
 STAGING_DIR="${WORKDIR}/staging"
+BACKUP_DIR="${BACKUP_BASE_DIR}/${ENVIRONMENT}"
 
 need_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "ERROR: missing cmd: $1" >&2; exit 1; }; }
 need_cmd aws
@@ -71,16 +82,28 @@ need_cmd unzip
 need_cmd systemctl
 need_cmd sudo
 
-if [[ ! -d "${BASE_DIR}" ]]; then
-  echo "ERROR: ${BASE_DIR} does not exist." >&2
-  exit 1
-fi
-
 echo "==> Environment: ${ENVIRONMENT}"
 echo "==> Domain:      ${DOMAIN}"
 echo "==> Service:     ${SERVICE_NAME}"
-echo "==> Target dir:  ${TARGET_DIR}"
+echo "==> App dir:     ${TARGET_DIR}"
 echo "==> S3 object:   s3://${S3_BUCKET}/${S3_PREFIX}/${ZIP_FILE}"
+
+# ============================================================================
+# Ensure dedicated system user exists
+# ============================================================================
+
+if ! id "${SERVICE_USER}" &>/dev/null; then
+  echo "==> Creating system user: ${SERVICE_USER}"
+  sudo useradd \
+    --system \
+    --no-create-home \
+    --shell /usr/sbin/nologin \
+    --comment "Flutter WebRTC Server" \
+    "${SERVICE_USER}"
+  echo "==> User created: ${SERVICE_USER}"
+else
+  echo "==> User already exists: ${SERVICE_USER}"
+fi
 
 # ============================================================================
 # Install / update systemd service
@@ -88,7 +111,6 @@ echo "==> S3 object:   s3://${S3_BUCKET}/${S3_PREFIX}/${ZIP_FILE}"
 
 install_service() {
   echo "==> Installing systemd service: ${SYSTEMD_SERVICE_FILE}"
-
   sudo tee "${SYSTEMD_SERVICE_FILE}" > /dev/null <<EOF
 [Unit]
 Description=Flutter WebRTC Signaling Server (${ENVIRONMENT})
@@ -96,13 +118,21 @@ After=network.target
 
 [Service]
 Type=simple
-User=ubuntu
+User=${SERVICE_USER}
+Group=${SERVICE_USER}
 WorkingDirectory=${TARGET_DIR}
 ExecStart=${TARGET_DIR}/${BUILD_OUTPUT}
 Restart=always
 RestartSec=10
 StandardOutput=journal
 StandardError=journal
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=${TARGET_DIR}
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
@@ -113,15 +143,13 @@ EOF
   echo "==> Service installed and enabled"
 }
 
-# Check if service file needs to be created or updated
 if [[ ! -f "${SYSTEMD_SERVICE_FILE}" ]]; then
   echo "==> Service not found, performing initial installation..."
   install_service
 else
-  # Update if WorkingDirectory points to a different path (e.g. legacy migration)
   CURRENT_WD=$(grep "WorkingDirectory" "${SYSTEMD_SERVICE_FILE}" | cut -d= -f2 || true)
   if [[ "${CURRENT_WD}" != "${TARGET_DIR}" ]]; then
-    echo "==> Updating service (WorkingDirectory: ${CURRENT_WD} → ${TARGET_DIR})"
+    echo "==> Updating service (WorkingDirectory: ${CURRENT_WD} -> ${TARGET_DIR})"
     install_service
   else
     echo "==> Service already up to date"
@@ -140,13 +168,19 @@ sudo systemctl stop "${SERVICE_NAME}" || true
 # ============================================================================
 
 if [[ "${ENVIRONMENT}" == "develop" && -d "${LEGACY_DIR}" && ! -d "${TARGET_DIR}" ]]; then
-  echo "==> Migrating from legacy directory: ${LEGACY_DIR} → ${TARGET_DIR}"
+  echo "==> Migrating from legacy directory: ${LEGACY_DIR} -> ${TARGET_DIR}"
+  sudo mkdir -p "${APP_BASE_DIR}"
   sudo mv "${LEGACY_DIR}" "${TARGET_DIR}"
-  sudo chown -R ubuntu:ubuntu "${TARGET_DIR}"
+  sudo chown -R "${SERVICE_USER}:${SERVICE_USER}" "${TARGET_DIR}"
   echo "==> Migration complete"
 fi
 
-mkdir -p "${WORKDIR}"
+# ============================================================================
+# Prepare directories
+# ============================================================================
+
+sudo mkdir -p "${APP_BASE_DIR}" "${WORKDIR}" "${BACKUP_DIR}"
+sudo chown ubuntu:ubuntu "${WORKDIR}"
 
 # ============================================================================
 # Download package
@@ -163,13 +197,9 @@ aws s3 cp "s3://${S3_BUCKET}/${S3_PREFIX}/${ZIP_FILE}" "./${ZIP_FILE}"
 
 if [[ -d "${TARGET_DIR}" ]]; then
   TS="$(date +%Y%m%d_%H%M%S)"
-  BACKUP_DIR="${BASE_DIR}/flutter-webrtc-server-${ENVIRONMENT}.backup_${TS}"
-  echo "==> Creating backup: ${BACKUP_DIR}"
-  if ! sudo mv "${TARGET_DIR}" "${BACKUP_DIR}"; then
-    sudo mkdir -p "${BACKUP_DIR}"
-    sudo cp -a "${TARGET_DIR}/." "${BACKUP_DIR}/"
-    sudo rm -rf "${TARGET_DIR}"
-  fi
+  SNAP="${BACKUP_DIR}/snap_${TS}"
+  echo "==> Creating backup: ${SNAP}"
+  sudo cp -a "${TARGET_DIR}" "${SNAP}"
 fi
 
 # ============================================================================
@@ -193,31 +223,34 @@ if [[ ! -d "${EXTRACTED_DIR}" ]]; then
 fi
 
 if [[ -z "${EXTRACTED_DIR}" || ! -d "${EXTRACTED_DIR}" ]]; then
-  echo "ERROR: Could not find extracted source directory in ${STAGING_DIR}" >&2
+  echo "ERROR: Could not find extracted source in ${STAGING_DIR}" >&2
   exit 1
 fi
 
-echo "==> Promoting to target: ${TARGET_DIR}"
+# ============================================================================
+# Promote to target directory
+# ============================================================================
+
+echo "==> Promoting to: ${TARGET_DIR}"
+sudo rm -rf "${TARGET_DIR}"
 if [[ "${EXTRACTED_DIR}" == "${STAGING_DIR}" ]]; then
-  sudo mkdir -p "${TARGET_DIR}"
   sudo cp -a "${STAGING_DIR}/." "${TARGET_DIR}/"
 else
   sudo mv "${EXTRACTED_DIR}" "${TARGET_DIR}"
 fi
 
-sudo chown -R ubuntu:ubuntu "${TARGET_DIR}"
-cd "${TARGET_DIR}"
-
 # ============================================================================
 # Apply environment config
 # ============================================================================
 
+cd "${TARGET_DIR}"
+
 CONFIG_FILE="configs/config-${ENVIRONMENT}.ini"
 if [[ -f "${CONFIG_FILE}" ]]; then
   echo "==> Applying config: ${CONFIG_FILE}"
-  cp "${CONFIG_FILE}" configs/config.ini
+  sudo cp "${CONFIG_FILE}" configs/config.ini
 else
-  echo "==> No environment config found (${CONFIG_FILE}), using config.ini as-is"
+  echo "==> No environment config found, using config.ini as-is"
 fi
 
 # ============================================================================
@@ -226,13 +259,20 @@ fi
 
 if [[ -f "${BUILD_OUTPUT}" ]]; then
   echo "==> Using pre-compiled binary"
-  chmod +x "${BUILD_OUTPUT}"
+  sudo chmod +x "${BUILD_OUTPUT}"
   ls -lh "${BUILD_OUTPUT}"
 else
   echo "==> Building Go binary..."
   need_cmd go
-  go build -o "${BUILD_OUTPUT}" "${GO_MAIN_PATH}"
+  sudo -u ubuntu go build -o "${BUILD_OUTPUT}" "${GO_MAIN_PATH}"
 fi
+
+# ============================================================================
+# Set ownership — flutter-webrtc user owns the entire app directory
+# ============================================================================
+
+sudo chown -R "${SERVICE_USER}:${SERVICE_USER}" "${TARGET_DIR}"
+sudo chmod 750 "${TARGET_DIR}"
 
 # ============================================================================
 # TLS certificates
@@ -253,7 +293,8 @@ echo "==> Copying TLS certs..."
 sudo mkdir -p "${CERT_DST_DIR}"
 sudo cp "${LE_DOMAIN_PATH}/fullchain.pem" "${CERT_DST_DIR}/cert.pem"
 sudo cp "${LE_DOMAIN_PATH}/privkey.pem"   "${CERT_DST_DIR}/key.pem"
-sudo chown ubuntu:ubuntu "${CERT_DST_DIR}"/*.pem
+sudo chown "${SERVICE_USER}:${SERVICE_USER}" "${CERT_DST_DIR}"/*.pem
+sudo chmod 640 "${CERT_DST_DIR}"/*.pem
 
 # ============================================================================
 # Start service
