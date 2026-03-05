@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SERVICE_NAME="flutter-webrtc.service"
 GO_MAIN_PATH="cmd/server/main.go"
 BUILD_OUTPUT="webrtc-server"
 BASE_DIR="/home/ubuntu"
+SYSTEMD_SERVICE_FILE="/etc/systemd/system/flutter-webrtc.service"
+LEGACY_DIR="${BASE_DIR}/flutter-webrtc-server-master"
 
 ZIP_FILE=""
 S3_BUCKET=""
 DOMAIN=""
 ENVIRONMENT=""
+SERVICE_NAME="flutter-webrtc.service"
 
 usage() {
   cat <<'EOF'
@@ -74,38 +76,106 @@ if [[ ! -d "${BASE_DIR}" ]]; then
   exit 1
 fi
 
-mkdir -p "${WORKDIR}"
-
 echo "==> Environment: ${ENVIRONMENT}"
 echo "==> Domain:      ${DOMAIN}"
 echo "==> Service:     ${SERVICE_NAME}"
 echo "==> Target dir:  ${TARGET_DIR}"
 echo "==> S3 object:   s3://${S3_BUCKET}/${S3_PREFIX}/${ZIP_FILE}"
 
-echo "==> Stopping service (if running)..."
+# ============================================================================
+# Install / update systemd service
+# ============================================================================
+
+install_service() {
+  echo "==> Installing systemd service: ${SYSTEMD_SERVICE_FILE}"
+
+  sudo tee "${SYSTEMD_SERVICE_FILE}" > /dev/null <<EOF
+[Unit]
+Description=Flutter WebRTC Signaling Server (${ENVIRONMENT})
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=${TARGET_DIR}
+ExecStart=${TARGET_DIR}/${BUILD_OUTPUT}
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  sudo systemctl daemon-reload
+  sudo systemctl enable "${SERVICE_NAME}"
+  echo "==> Service installed and enabled"
+}
+
+# Check if service file needs to be created or updated
+if [[ ! -f "${SYSTEMD_SERVICE_FILE}" ]]; then
+  echo "==> Service not found, performing initial installation..."
+  install_service
+else
+  # Update if WorkingDirectory points to a different path (e.g. legacy migration)
+  CURRENT_WD=$(grep "WorkingDirectory" "${SYSTEMD_SERVICE_FILE}" | cut -d= -f2 || true)
+  if [[ "${CURRENT_WD}" != "${TARGET_DIR}" ]]; then
+    echo "==> Updating service (WorkingDirectory: ${CURRENT_WD} → ${TARGET_DIR})"
+    install_service
+  else
+    echo "==> Service already up to date"
+  fi
+fi
+
+# ============================================================================
+# Stop service
+# ============================================================================
+
+echo "==> Stopping service..."
 sudo systemctl stop "${SERVICE_NAME}" || true
 
-echo "==> Preparing download..."
-cd "${WORKDIR}"
-rm -f -- ./*.zip
+# ============================================================================
+# Migrate from legacy directory (develop only)
+# ============================================================================
+
+if [[ "${ENVIRONMENT}" == "develop" && -d "${LEGACY_DIR}" && ! -d "${TARGET_DIR}" ]]; then
+  echo "==> Migrating from legacy directory: ${LEGACY_DIR} → ${TARGET_DIR}"
+  sudo mv "${LEGACY_DIR}" "${TARGET_DIR}"
+  sudo chown -R ubuntu:ubuntu "${TARGET_DIR}"
+  echo "==> Migration complete"
+fi
+
+mkdir -p "${WORKDIR}"
+
+# ============================================================================
+# Download package
+# ============================================================================
 
 echo "==> Downloading ZIP from S3..."
+cd "${WORKDIR}"
+rm -f -- ./*.zip
 aws s3 cp "s3://${S3_BUCKET}/${S3_PREFIX}/${ZIP_FILE}" "./${ZIP_FILE}"
 
-# Backup existing deployment
+# ============================================================================
+# Backup current deployment
+# ============================================================================
+
 if [[ -d "${TARGET_DIR}" ]]; then
   TS="$(date +%Y%m%d_%H%M%S)"
   BACKUP_DIR="${BASE_DIR}/flutter-webrtc-server-${ENVIRONMENT}.backup_${TS}"
   echo "==> Creating backup: ${BACKUP_DIR}"
   if ! sudo mv "${TARGET_DIR}" "${BACKUP_DIR}"; then
-    echo "==> mv failed, doing copy backup..."
     sudo mkdir -p "${BACKUP_DIR}"
     sudo cp -a "${TARGET_DIR}/." "${BACKUP_DIR}/"
     sudo rm -rf "${TARGET_DIR}"
   fi
 fi
 
-# Extract to staging
+# ============================================================================
+# Extract package
+# ============================================================================
+
 echo "==> Extracting to staging..."
 sudo rm -rf "${STAGING_DIR}"
 mkdir -p "${STAGING_DIR}"
@@ -138,7 +208,10 @@ fi
 sudo chown -R ubuntu:ubuntu "${TARGET_DIR}"
 cd "${TARGET_DIR}"
 
-# Apply environment-specific config
+# ============================================================================
+# Apply environment config
+# ============================================================================
+
 CONFIG_FILE="configs/config-${ENVIRONMENT}.ini"
 if [[ -f "${CONFIG_FILE}" ]]; then
   echo "==> Applying config: ${CONFIG_FILE}"
@@ -147,7 +220,10 @@ else
   echo "==> No environment config found (${CONFIG_FILE}), using config.ini as-is"
 fi
 
-# Use pre-compiled binary if available, otherwise build
+# ============================================================================
+# Binary (pre-compiled or build)
+# ============================================================================
+
 if [[ -f "${BUILD_OUTPUT}" ]]; then
   echo "==> Using pre-compiled binary"
   chmod +x "${BUILD_OUTPUT}"
@@ -158,7 +234,10 @@ else
   go build -o "${BUILD_OUTPUT}" "${GO_MAIN_PATH}"
 fi
 
-# Copy TLS certificates
+# ============================================================================
+# TLS certificates
+# ============================================================================
+
 LE_DOMAIN_PATH="/etc/letsencrypt/live/${DOMAIN}"
 CERT_DST_DIR="${TARGET_DIR}/configs/certs"
 
@@ -176,10 +255,12 @@ sudo cp "${LE_DOMAIN_PATH}/fullchain.pem" "${CERT_DST_DIR}/cert.pem"
 sudo cp "${LE_DOMAIN_PATH}/privkey.pem"   "${CERT_DST_DIR}/key.pem"
 sudo chown ubuntu:ubuntu "${CERT_DST_DIR}"/*.pem
 
-echo "==> Reloading systemd..."
-sudo systemctl daemon-reload
+# ============================================================================
+# Start service
+# ============================================================================
 
-echo "==> Restarting service..."
+echo "==> Reloading systemd and restarting service..."
+sudo systemctl daemon-reload
 sudo systemctl restart "${SERVICE_NAME}"
 
 echo "==> Service status:"
