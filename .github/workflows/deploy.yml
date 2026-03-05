@@ -15,10 +15,17 @@ on:
         type: string
 
 env:
-  S3_BUCKET: ota-img-dev.lgmk-eng.com
   AWS_REGION: us-east-1
   SERVICE_NAME: flutter-webrtc.service
-  INFRA_PROJECT_PATH: ../lgmk-pers-base-infra
+  S3_BUCKET_DEVELOP: ota-img-dev.lgmk-eng.com
+  S3_BUCKET_QA: ota-img-dev.lgmk-eng.com
+  S3_BUCKET_STAGING: ota-img-dev.lgmk-eng.com
+  S3_BUCKET_MAIN2: ota-img-main2.logicmarkcloud.com
+  DOMAIN_DEVELOP: flutter-webrtc-develop2.lgmk-eng.com
+  DOMAIN_MAIN2: flutter-webrtc.main2.logicmarkcloud.com
+  DOMAIN_QA: flutter-webrtc-qa.lgmk-eng.com
+  DOMAIN_STAGING: flutter-webrtc-staging.lgmk-eng.com
+  S3_KEEP_LAST: 5
 
 jobs:
   build:
@@ -137,20 +144,29 @@ jobs:
         with:
           name: webrtc-server-package
 
-      - name: Set Role ARN
+      - name: Set environment variables
         run: |
-          if [[ "${{ needs.build.outputs.environment }}" == "develop" ]]; then
+          ENV="${{ needs.build.outputs.environment }}"
+
+          if [[ "${ENV}" == "develop" ]]; then
             echo "ROLE_ARN=${{ secrets.AWS_ROLE_TO_ASSUME_DEVELOP }}" >> $GITHUB_ENV
-          elif [[ "${{ needs.build.outputs.environment }}" == "qa" ]]; then
+            echo "DEPLOY_DOMAIN=${{ env.DOMAIN_DEVELOP }}" >> $GITHUB_ENV
+            echo "S3_BUCKET=${{ env.S3_BUCKET_DEVELOP }}" >> $GITHUB_ENV
+          elif [[ "${ENV}" == "qa" ]]; then
             echo "ROLE_ARN=${{ secrets.AWS_ROLE_TO_ASSUME_QA }}" >> $GITHUB_ENV
-          elif [[ "${{ needs.build.outputs.environment }}" == "staging" ]]; then
+            echo "DEPLOY_DOMAIN=${{ env.DOMAIN_QA }}" >> $GITHUB_ENV
+            echo "S3_BUCKET=${{ env.S3_BUCKET_QA }}" >> $GITHUB_ENV
+          elif [[ "${ENV}" == "staging" ]]; then
             echo "ROLE_ARN=${{ secrets.AWS_ROLE_TO_ASSUME_STAGING }}" >> $GITHUB_ENV
-          # NOTE: main environment is NOT USED for this project (only main2)
-          # elif [[ "${{ needs.build.outputs.environment }}" == "main" ]]; then
-          #   echo "ROLE_ARN=${{ secrets.AWS_ROLE_TO_ASSUME_MAIN }}" >> $GITHUB_ENV
-          elif [[ "${{ needs.build.outputs.environment }}" == "main2" ]]; then
+            echo "DEPLOY_DOMAIN=${{ env.DOMAIN_STAGING }}" >> $GITHUB_ENV
+            echo "S3_BUCKET=${{ env.S3_BUCKET_STAGING }}" >> $GITHUB_ENV
+          elif [[ "${ENV}" == "main2" ]]; then
             echo "ROLE_ARN=${{ secrets.AWS_ROLE_TO_ASSUME_MAIN2 }}" >> $GITHUB_ENV
+            echo "DEPLOY_DOMAIN=${{ env.DOMAIN_MAIN2 }}" >> $GITHUB_ENV
+            echo "S3_BUCKET=${{ env.S3_BUCKET_MAIN2 }}" >> $GITHUB_ENV
           fi
+
+          echo "S3_PREFIX=flutter-webrtc-server-${ENV}" >> $GITHUB_ENV
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -161,18 +177,49 @@ jobs:
 
       - name: Upload package to S3
         run: |
-          echo "📤 Uploading ${{ needs.build.outputs.zip_filename }} to s3://${{ env.S3_BUCKET }}/"
+          S3_KEY="${{ env.S3_PREFIX }}/${{ needs.build.outputs.zip_filename }}"
+          echo "📤 Uploading to s3://${{ env.S3_BUCKET }}/${S3_KEY}"
 
           aws s3 cp \
             "${{ needs.build.outputs.zip_filename }}" \
-            "s3://${{ env.S3_BUCKET }}/${{ needs.build.outputs.zip_filename }}" \
+            "s3://${{ env.S3_BUCKET }}/${S3_KEY}" \
             --metadata "version=${{ needs.build.outputs.version }},git-sha=${GITHUB_SHA},deployed-by=${GITHUB_ACTOR},environment=${{ needs.build.outputs.environment }}" \
             --no-progress
 
           echo "✅ Upload complete"
+          aws s3 ls "s3://${{ env.S3_BUCKET }}/${S3_KEY}"
 
-          # Verify upload
-          aws s3 ls "s3://${{ env.S3_BUCKET }}/${{ needs.build.outputs.zip_filename }}"
+      - name: Rotate old packages (keep last ${{ env.S3_KEEP_LAST }})
+        run: |
+          PREFIX="${{ env.S3_PREFIX }}"
+          BUCKET="${{ env.S3_BUCKET }}"
+          KEEP=${{ env.S3_KEEP_LAST }}
+
+          echo "🧹 Rotating old packages in s3://${BUCKET}/${PREFIX}/ (keeping last ${KEEP})"
+
+          # List objects sorted by LastModified descending, skip the first KEEP, delete the rest
+          OBJECTS=$(aws s3api list-objects-v2 \
+            --bucket "${BUCKET}" \
+            --prefix "${PREFIX}/" \
+            --query 'sort_by(Contents, &LastModified)[*].Key' \
+            --output text | tr '\t' '\n' | grep '\.zip$')
+
+          TOTAL=$(echo "${OBJECTS}" | grep -c '.' || true)
+          echo "  Found ${TOTAL} packages"
+
+          if [[ "${TOTAL}" -le "${KEEP}" ]]; then
+            echo "  Nothing to delete (${TOTAL} ≤ ${KEEP})"
+          else
+            DELETE_COUNT=$((TOTAL - KEEP))
+            echo "  Deleting ${DELETE_COUNT} old package(s)..."
+
+            echo "${OBJECTS}" | head -n "${DELETE_COUNT}" | while read -r KEY; do
+              echo "  🗑️  Deleting: ${KEY}"
+              aws s3 rm "s3://${BUCKET}/${KEY}"
+            done
+
+            echo "✅ Rotation complete"
+          fi
 
       - name: Get EC2 instance ID from infrastructure outputs
         id: get-instance
@@ -283,11 +330,11 @@ jobs:
               "rm -rf /tmp/webrtc-extract",
               "mkdir -p /tmp/webrtc-extract",
               "cd /tmp/webrtc-extract",
-              "aws s3 cp s3://${{ env.S3_BUCKET }}/${{ needs.build.outputs.zip_filename }} ./package.zip",
+              "aws s3 cp s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}/${{ needs.build.outputs.zip_filename }} ./package.zip",
               "unzip -q -j -o package.zip scripts/deploy-flutter-webrtc-server.sh",
               "chmod +x deploy-flutter-webrtc-server.sh",
-              "echo \"==> Executing updated deployment script as ubuntu user...\"",
-              "su - ubuntu -c \"export PATH=/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:\\${PATH}; export GO111MODULE=on; export CGO_ENABLED=0; cd /tmp/webrtc-extract && bash deploy-flutter-webrtc-server.sh -b ${{ env.S3_BUCKET }} -f ${{ needs.build.outputs.zip_filename }} -s ${{ env.SERVICE_NAME }}\"",
+              "echo \"==> Executing deployment script as ubuntu user...\"",
+              "su - ubuntu -c \"export PATH=/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:\\${PATH}; export GO111MODULE=on; export CGO_ENABLED=0; cd /tmp/webrtc-extract && bash deploy-flutter-webrtc-server.sh -b ${{ env.S3_BUCKET }} -f ${{ needs.build.outputs.zip_filename }} -d ${{ env.DEPLOY_DOMAIN }} -e ${{ needs.build.outputs.environment }} -s ${{ env.SERVICE_NAME }}\"",
               "cd /home/ubuntu",
               "rm -rf /tmp/webrtc-extract",
               "echo \"\"",
