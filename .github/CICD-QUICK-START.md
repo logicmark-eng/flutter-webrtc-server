@@ -123,16 +123,22 @@ gh api repos/:owner/:repo/environments/main2 -X PUT
 
 ### 4️⃣ Prepare EC2 Instances (first deploy only)
 
-The pipeline handles everything automatically except SSL certificates.
-Run certbot once per instance before the first deploy:
+Run the following on each instance before the first deploy:
 
 ```bash
-# develop instance
+# 1. AWS CLI (required by SSM commands and deploy script)
+sudo snap install aws-cli --classic
+
+# 2. zip / unzip (required by deploy script)
+sudo apt-get install -y zip unzip
+
+# 3. SSL certificate (certbot)
 sudo snap install --classic certbot
+
+# develop instance:
 sudo certbot certonly --standalone -d flutter-webrtc-develop2.lgmk-eng.com
 
-# main2 instance
-sudo snap install --classic certbot
+# main2 instance:
 sudo certbot certonly --standalone -d flutter-webrtc.main2.logicmarkcloud.com
 ```
 
