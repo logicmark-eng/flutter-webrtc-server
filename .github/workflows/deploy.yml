@@ -3,14 +3,14 @@ name: Deploy Flutter WebRTC Server
 on:
   push:
     branches:
-      - master
       - develop
+      - master
     tags:
       - 'v*.*.*'
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version tag (e.g., v0.0.7) - leave empty for auto-generation'
+        description: 'Version tag (e.g., v1.0.0) - leave empty for auto-generation'
         required: false
         type: string
 
@@ -18,13 +18,9 @@ env:
   AWS_REGION: us-east-1
   SERVICE_NAME: flutter-webrtc.service
   S3_BUCKET_DEVELOP: ota-img-dev.lgmk-eng.com
-  S3_BUCKET_QA: ota-img-dev.lgmk-eng.com
-  S3_BUCKET_STAGING: ota-img-dev.lgmk-eng.com
   S3_BUCKET_MAIN2: ota-img-main2.logicmarkcloud.com
   DOMAIN_DEVELOP: flutter-webrtc-develop2.lgmk-eng.com
   DOMAIN_MAIN2: flutter-webrtc.main2.logicmarkcloud.com
-  DOMAIN_QA: flutter-webrtc-qa.lgmk-eng.com
-  DOMAIN_STAGING: flutter-webrtc-staging.lgmk-eng.com
   S3_KEEP_LAST: 5
 
 jobs:
@@ -45,30 +41,33 @@ jobs:
       - name: Determine environment
         id: environment
         run: |
-          BRANCH="${GITHUB_REF#refs/heads/}"
-
-          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            # Tags always deploy to main2 (production)
-            ENVIRONMENT="main2"
-          elif [[ "${BRANCH}" == "master" ]]; then
-            ENVIRONMENT="main2"
-          elif [[ "${BRANCH}" == "develop" ]]; then
+          if [[ "${{ github.ref }}" == "refs/heads/develop" ]]; then
             ENVIRONMENT="develop"
-          elif [[ "${BRANCH}" == "qa" ]]; then
-            ENVIRONMENT="qa"
-          elif [[ "${BRANCH}" == "staging" ]]; then
-            ENVIRONMENT="staging"
+          elif [[ "${{ github.ref }}" == "refs/heads/master" || "${{ github.ref }}" == refs/tags/* ]]; then
+            ENVIRONMENT="main2"
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            BRANCH="${GITHUB_REF#refs/heads/}"
+            case "${BRANCH}" in
+              develop) ENVIRONMENT="develop" ;;
+              master)  ENVIRONMENT="main2" ;;
+              *)
+                echo "Unsupported branch for workflow_dispatch: ${BRANCH}"
+                exit 1
+                ;;
+            esac
           else
-            echo "❌ Unknown branch: ${BRANCH}. No deployment configured."
+            echo "Unsupported ref: ${{ github.ref }}"
             exit 1
           fi
 
           echo "environment=${ENVIRONMENT}" >> $GITHUB_OUTPUT
-          echo "🎯 Branch: ${BRANCH} → Environment: ${ENVIRONMENT}"
+          echo "Target environment: ${ENVIRONMENT}"
 
       - name: Determine version
         id: version
         run: |
+          ENVIRONMENT="${{ steps.environment.outputs.environment }}"
+
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             VERSION="${GITHUB_REF#refs/tags/}"
           elif [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ github.event.inputs.version }}" ]]; then
@@ -78,13 +77,12 @@ jobs:
             VERSION="v0.0.0-${BRANCH_NAME}-${GITHUB_SHA::7}"
           fi
 
-          BRANCH_NAME="${GITHUB_REF#refs/heads/}"
-          ZIP_FILENAME="flutter-webrtc-server-${BRANCH_NAME}-${VERSION}.zip"
+          ZIP_FILENAME="flutter-webrtc-server-${ENVIRONMENT}-${VERSION}.zip"
 
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "zip_filename=${ZIP_FILENAME}" >> $GITHUB_OUTPUT
-          echo "📦 Version: ${VERSION}"
-          echo "📦 ZIP filename: ${ZIP_FILENAME}"
+          echo "Version: ${VERSION}"
+          echo "ZIP filename: ${ZIP_FILENAME}"
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -94,20 +92,17 @@ jobs:
 
       - name: Build Go binary
         run: |
-          echo "🔨 Building Go binary..."
+          echo "Building Go binary..."
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
             -ldflags="-s -w" \
             -o webrtc-server \
             cmd/server/main.go
-
-          echo "✅ Binary built successfully"
+          echo "Binary built:"
           ls -lh webrtc-server
 
       - name: Create deployment package
         run: |
-          echo "📦 Creating deployment package..."
-
-          # Create a clean archive excluding unnecessary files
+          echo "Creating deployment package..."
           zip -r "${{ steps.version.outputs.zip_filename }}" . \
             -x "*.git*" \
             -x "*.github*" \
@@ -118,8 +113,7 @@ jobs:
             -x "*__pycache__/*" \
             -x "*.vscode/*" \
             -x "*.idea/*"
-
-          echo "✅ Package created"
+          echo "Package created:"
           ls -lh "${{ steps.version.outputs.zip_filename }}"
 
       - name: Upload artifact
@@ -144,29 +138,26 @@ jobs:
         with:
           name: webrtc-server-package
 
-      - name: Set environment variables
+      - name: Set environment-specific variables
         run: |
-          ENV="${{ needs.build.outputs.environment }}"
+          ENVIRONMENT="${{ needs.build.outputs.environment }}"
 
-          if [[ "${ENV}" == "develop" ]]; then
-            echo "ROLE_ARN=${{ secrets.AWS_ROLE_TO_ASSUME_DEVELOP }}" >> $GITHUB_ENV
-            echo "DEPLOY_DOMAIN=${{ env.DOMAIN_DEVELOP }}" >> $GITHUB_ENV
+          if [[ "${ENVIRONMENT}" == "develop" ]]; then
             echo "S3_BUCKET=${{ env.S3_BUCKET_DEVELOP }}" >> $GITHUB_ENV
-          elif [[ "${ENV}" == "qa" ]]; then
-            echo "ROLE_ARN=${{ secrets.AWS_ROLE_TO_ASSUME_QA }}" >> $GITHUB_ENV
-            echo "DEPLOY_DOMAIN=${{ env.DOMAIN_QA }}" >> $GITHUB_ENV
-            echo "S3_BUCKET=${{ env.S3_BUCKET_QA }}" >> $GITHUB_ENV
-          elif [[ "${ENV}" == "staging" ]]; then
-            echo "ROLE_ARN=${{ secrets.AWS_ROLE_TO_ASSUME_STAGING }}" >> $GITHUB_ENV
-            echo "DEPLOY_DOMAIN=${{ env.DOMAIN_STAGING }}" >> $GITHUB_ENV
-            echo "S3_BUCKET=${{ env.S3_BUCKET_STAGING }}" >> $GITHUB_ENV
-          elif [[ "${ENV}" == "main2" ]]; then
-            echo "ROLE_ARN=${{ secrets.AWS_ROLE_TO_ASSUME_MAIN2 }}" >> $GITHUB_ENV
-            echo "DEPLOY_DOMAIN=${{ env.DOMAIN_MAIN2 }}" >> $GITHUB_ENV
+            echo "DEPLOY_DOMAIN=${{ env.DOMAIN_DEVELOP }}" >> $GITHUB_ENV
+            echo "ROLE_ARN=${{ secrets.AWS_ROLE_TO_ASSUME_DEVELOP }}" >> $GITHUB_ENV
+          elif [[ "${ENVIRONMENT}" == "main2" ]]; then
             echo "S3_BUCKET=${{ env.S3_BUCKET_MAIN2 }}" >> $GITHUB_ENV
+            echo "DEPLOY_DOMAIN=${{ env.DOMAIN_MAIN2 }}" >> $GITHUB_ENV
+            echo "ROLE_ARN=${{ secrets.AWS_ROLE_TO_ASSUME_MAIN2 }}" >> $GITHUB_ENV
+          elif [[ "${ENVIRONMENT}" == "qa" ]]; then
+            echo "ROLE_ARN=${{ secrets.AWS_ROLE_TO_ASSUME_QA }}" >> $GITHUB_ENV
+          elif [[ "${ENVIRONMENT}" == "staging" ]]; then
+            echo "ROLE_ARN=${{ secrets.AWS_ROLE_TO_ASSUME_STAGING }}" >> $GITHUB_ENV
           fi
 
-          echo "S3_PREFIX=flutter-webrtc-server-${ENV}" >> $GITHUB_ENV
+          echo "S3_PREFIX=flutter-webrtc-server-${ENVIRONMENT}" >> $GITHUB_ENV
+          echo "Environment: ${ENVIRONMENT}"
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -177,57 +168,48 @@ jobs:
 
       - name: Upload package to S3
         run: |
-          S3_KEY="${{ env.S3_PREFIX }}/${{ needs.build.outputs.zip_filename }}"
-          echo "📤 Uploading to s3://${{ env.S3_BUCKET }}/${S3_KEY}"
+          TARGET="s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}/${{ needs.build.outputs.zip_filename }}"
+          echo "Uploading to: ${TARGET}"
 
           aws s3 cp \
             "${{ needs.build.outputs.zip_filename }}" \
-            "s3://${{ env.S3_BUCKET }}/${S3_KEY}" \
-            --metadata "version=${{ needs.build.outputs.version }},git-sha=${GITHUB_SHA},deployed-by=${GITHUB_ACTOR},environment=${{ needs.build.outputs.environment }}" \
+            "${TARGET}" \
+            --metadata "version=${{ needs.build.outputs.version }},git-sha=${{ github.sha }},deployed-by=${{ github.actor }},environment=${{ needs.build.outputs.environment }}" \
             --no-progress
 
-          echo "✅ Upload complete"
-          aws s3 ls "s3://${{ env.S3_BUCKET }}/${S3_KEY}"
+          echo "Upload complete"
+          aws s3 ls "s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}/"
 
-      - name: Rotate old packages (keep last ${{ env.S3_KEEP_LAST }})
+      - name: Rotate S3 packages (keep last ${{ env.S3_KEEP_LAST }})
         run: |
-          PREFIX="${{ env.S3_PREFIX }}"
-          BUCKET="${{ env.S3_BUCKET }}"
-          KEEP=${{ env.S3_KEEP_LAST }}
+          PREFIX="s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}"
+          echo "Rotating packages in ${PREFIX}/ (keep last ${{ env.S3_KEEP_LAST }})..."
 
-          echo "🧹 Rotating old packages in s3://${BUCKET}/${PREFIX}/ (keeping last ${KEEP})"
+          PACKAGES=$(aws s3 ls "${PREFIX}/" \
+            | grep '\.zip$' \
+            | sort \
+            | awk '{print $4}')
 
-          # List objects sorted by LastModified descending, skip the first KEEP, delete the rest
-          OBJECTS=$(aws s3api list-objects-v2 \
-            --bucket "${BUCKET}" \
-            --prefix "${PREFIX}/" \
-            --query 'sort_by(Contents, &LastModified)[*].Key' \
-            --output text | tr '\t' '\n' | grep '\.zip$')
+          TOTAL=$(echo "${PACKAGES}" | grep -c '.' || true)
+          echo "Total packages: ${TOTAL}"
 
-          TOTAL=$(echo "${OBJECTS}" | grep -c '.' || true)
-          echo "  Found ${TOTAL} packages"
-
-          if [[ "${TOTAL}" -le "${KEEP}" ]]; then
-            echo "  Nothing to delete (${TOTAL} ≤ ${KEEP})"
-          else
-            DELETE_COUNT=$((TOTAL - KEEP))
-            echo "  Deleting ${DELETE_COUNT} old package(s)..."
-
-            echo "${OBJECTS}" | head -n "${DELETE_COUNT}" | while read -r KEY; do
-              echo "  🗑️  Deleting: ${KEY}"
-              aws s3 rm "s3://${BUCKET}/${KEY}"
+          if [[ "${TOTAL}" -gt "${{ env.S3_KEEP_LAST }}" ]]; then
+            DELETE_COUNT=$(( TOTAL - ${{ env.S3_KEEP_LAST }} ))
+            echo "Deleting ${DELETE_COUNT} old package(s)..."
+            echo "${PACKAGES}" | head -n "${DELETE_COUNT}" | while read -r FILE; do
+              echo "  Deleting: ${FILE}"
+              aws s3 rm "${PREFIX}/${FILE}"
             done
-
-            echo "✅ Rotation complete"
+          else
+            echo "Nothing to rotate (${TOTAL} <= ${{ env.S3_KEEP_LAST }})"
           fi
 
-      - name: Get EC2 instance ID from infrastructure outputs
+      - name: Get EC2 instance ID
         id: get-instance
         run: |
           ENVIRONMENT="${{ needs.build.outputs.environment }}"
-          echo "🔍 Looking for WebRTC server instance in environment: ${ENVIRONMENT}"
+          echo "Looking for instance: lgmk-flutter-webrtc-server-${ENVIRONMENT}"
 
-          # Method 1: Query EC2 instances by tags
           INSTANCE_ID=$(aws ec2 describe-instances \
             --filters \
               "Name=tag:Name,Values=lgmk-flutter-webrtc-server-${ENVIRONMENT}" \
@@ -236,70 +218,51 @@ jobs:
             --output text 2>/dev/null || echo "None")
 
           if [[ "${INSTANCE_ID}" == "None" || -z "${INSTANCE_ID}" ]]; then
-            echo "⚠️ Instance not found with exact tag match, trying wildcard search..."
-
-            INSTANCE_ID=$(aws ec2 describe-instances \
-              --filters \
-                "Name=tag:Name,Values=*webrtc*${ENVIRONMENT}*" \
-                "Name=instance-state-name,Values=running" \
-              --query 'Reservations[0].Instances[0].InstanceId' \
-              --output text 2>/dev/null || echo "None")
-          fi
-
-          if [[ "${INSTANCE_ID}" == "None" || -z "${INSTANCE_ID}" ]]; then
-            echo "⚠️ Instance not found. This might be expected if WebRTC server is not enabled for ${ENVIRONMENT}."
-            echo "💡 Check terraform/environments/${ENVIRONMENT}.tfvars in lgmk-pers-base-infra project."
-            echo "💡 Variable 'enable_webrtc_server' must be set to 'true'."
-
-            # List available instances for debugging
+            echo "No running instance found with tag Name=lgmk-flutter-webrtc-server-${ENVIRONMENT}"
             echo ""
-            echo "📋 Available WebRTC instances:"
+            echo "Available WebRTC instances:"
             aws ec2 describe-instances \
               --filters \
                 "Name=tag:Name,Values=*webrtc*" \
                 "Name=instance-state-name,Values=running" \
-              --query 'Reservations[].Instances[].[InstanceId,Tags[?Key==`Name`].Value|[0],Tags[?Key==`Environment`].Value|[0],State.Name]' \
+              --query 'Reservations[].Instances[].[InstanceId,Tags[?Key==`Name`].Value|[0],State.Name]' \
               --output table || true
-
             exit 1
           fi
 
           echo "instance_id=${INSTANCE_ID}" >> $GITHUB_OUTPUT
-          echo "✅ Found instance: ${INSTANCE_ID}"
+          echo "Found instance: ${INSTANCE_ID}"
 
-          # Get instance details
           aws ec2 describe-instances \
             --instance-ids "${INSTANCE_ID}" \
             --query 'Reservations[0].Instances[0].[InstanceId,PublicIpAddress,PrivateIpAddress,State.Name]' \
             --output table
 
-      - name: Verify instance has SSM agent
+      - name: Verify SSM agent
         run: |
-          echo "🔍 Verifying SSM agent connectivity..."
+          echo "Verifying SSM agent..."
 
-          # Check if instance is managed by SSM
           SSM_STATUS=$(aws ssm describe-instance-information \
             --filters "Key=InstanceIds,Values=${{ steps.get-instance.outputs.instance_id }}" \
             --query 'InstanceInformationList[0].PingStatus' \
             --output text 2>/dev/null || echo "NotFound")
 
           if [[ "${SSM_STATUS}" != "Online" ]]; then
-            echo "❌ SSM agent is not online for instance ${{ steps.get-instance.outputs.instance_id }}"
-            echo "💡 Ensure the EC2 instance has:"
-            echo "   - SSM agent installed and running"
-            echo "   - IAM role with AmazonSSMManagedInstanceCore policy"
-            echo "   - Network connectivity to SSM endpoints"
+            echo "SSM agent not online for ${{ steps.get-instance.outputs.instance_id }} (status: ${SSM_STATUS})"
             exit 1
           fi
 
-          echo "✅ SSM agent is online"
+          echo "SSM agent is online"
 
       - name: Execute deployment via SSM
         id: deploy
         run: |
-          echo "🚀 Deploying to EC2 instance: ${{ steps.get-instance.outputs.instance_id }}"
-          echo "📦 Package: ${{ needs.build.outputs.zip_filename }}"
-          echo "🎯 Environment: ${{ needs.build.outputs.environment }}"
+          ENVIRONMENT="${{ needs.build.outputs.environment }}"
+          echo "Deploying to instance: ${{ steps.get-instance.outputs.instance_id }}"
+          echo "  Environment: ${ENVIRONMENT}"
+          echo "  Package:     ${{ needs.build.outputs.zip_filename }}"
+          echo "  Domain:      ${{ env.DEPLOY_DOMAIN }}"
+          echo "  S3 prefix:   ${{ env.S3_PREFIX }}"
 
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "${{ steps.get-instance.outputs.instance_id }}" \
@@ -308,49 +271,34 @@ jobs:
             --parameters 'commands=[
               "set -eu",
               "echo \"==> WebRTC Server Deployment\"",
-              "echo \"    Version: ${{ needs.build.outputs.version }}\"",
-              "echo \"    Package: ${{ needs.build.outputs.zip_filename }}\"",
+              "echo \"    Version:     ${{ needs.build.outputs.version }}\"",
+              "echo \"    Package:     ${{ needs.build.outputs.zip_filename }}\"",
               "echo \"    Environment: ${{ needs.build.outputs.environment }}\"",
-              "echo \"    Git SHA: ${{ github.sha }}\"",
+              "echo \"    Domain:      ${{ env.DEPLOY_DOMAIN }}\"",
+              "echo \"    Git SHA:     ${{ github.sha }}\"",
               "echo \"\"",
-              "echo \"==> Configuring environment for ubuntu user...\"",
-              "export HOME=/home/ubuntu",
-              "export USER=ubuntu",
-              "export PATH=\"/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:${PATH}\"",
-              "export HOMEBREW_PREFIX=/home/linuxbrew/.linuxbrew",
-              "export HOMEBREW_CELLAR=/home/linuxbrew/.linuxbrew/Cellar",
-              "export HOMEBREW_REPOSITORY=/home/linuxbrew/.linuxbrew/Homebrew",
-              "export GO111MODULE=on",
-              "export CGO_ENABLED=0",
-              "echo \"Go version: $(go version)\"",
-              "echo \"GO111MODULE: ${GO111MODULE}\"",
-              "echo \"\"",
-              "cd /home/ubuntu",
-              "echo \"==> Extracting deployment script from package...\"",
               "rm -rf /tmp/webrtc-extract",
               "mkdir -p /tmp/webrtc-extract",
               "cd /tmp/webrtc-extract",
+              "echo \"==> Downloading package from S3...\"",
               "aws s3 cp s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}/${{ needs.build.outputs.zip_filename }} ./package.zip",
+              "echo \"==> Extracting deployment script...\"",
               "unzip -q -j -o package.zip scripts/deploy-flutter-webrtc-server.sh",
               "chmod +x deploy-flutter-webrtc-server.sh",
-              "echo \"==> Executing deployment script as ubuntu user...\"",
-              "su - ubuntu -c \"export PATH=/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:\\${PATH}; export GO111MODULE=on; export CGO_ENABLED=0; cd /tmp/webrtc-extract && bash deploy-flutter-webrtc-server.sh -b ${{ env.S3_BUCKET }} -f ${{ needs.build.outputs.zip_filename }} -d ${{ env.DEPLOY_DOMAIN }} -e ${{ needs.build.outputs.environment }} -s ${{ env.SERVICE_NAME }}\"",
-              "cd /home/ubuntu",
+              "echo \"==> Running deployment script...\"",
+              "bash deploy-flutter-webrtc-server.sh -b ${{ env.S3_BUCKET }} -f ${{ needs.build.outputs.zip_filename }} -d ${{ env.DEPLOY_DOMAIN }} -e ${{ needs.build.outputs.environment }} -s ${{ env.SERVICE_NAME }}",
               "rm -rf /tmp/webrtc-extract",
               "echo \"\"",
-              "echo \"✅ Deployment completed successfully\""
+              "echo \"Deployment completed successfully\""
             ]' \
             --timeout-seconds 600 \
             --output text \
             --query 'Command.CommandId')
 
           echo "command_id=${COMMAND_ID}" >> $GITHUB_OUTPUT
-          echo "📋 SSM Command ID: ${COMMAND_ID}"
+          echo "SSM Command ID: ${COMMAND_ID}"
 
-          # Wait for command to complete
-          echo "⏳ Waiting for deployment to complete..."
-          echo ""
-
+          echo "Waiting for deployment to complete..."
           for i in {1..60}; do
             STATUS=$(aws ssm list-command-invocations \
               --command-id "${COMMAND_ID}" \
@@ -361,30 +309,24 @@ jobs:
             echo "  [$i/60] Status: ${STATUS}"
 
             if [[ "${STATUS}" == "Success" ]]; then
-              echo ""
-              echo "✅ Deployment completed successfully"
+              echo "Deployment completed successfully"
               break
             elif [[ "${STATUS}" == "Failed" || "${STATUS}" == "Cancelled" || "${STATUS}" == "TimedOut" ]]; then
+              echo "Deployment failed with status: ${STATUS}"
               echo ""
-              echo "❌ Deployment failed with status: ${STATUS}"
-
-              # Get command output for debugging
-              echo ""
-              echo "📝 Command output:"
+              echo "Command output:"
               aws ssm get-command-invocation \
                 --command-id "${COMMAND_ID}" \
                 --instance-id "${{ steps.get-instance.outputs.instance_id }}" \
                 --query 'StandardOutputContent' \
                 --output text
-
               echo ""
-              echo "📝 Command errors:"
+              echo "Command errors:"
               aws ssm get-command-invocation \
                 --command-id "${COMMAND_ID}" \
                 --instance-id "${{ steps.get-instance.outputs.instance_id }}" \
                 --query 'StandardErrorContent' \
                 --output text
-
               exit 1
             fi
 
@@ -392,17 +334,14 @@ jobs:
           done
 
           if [[ "${STATUS}" != "Success" ]]; then
-            echo ""
-            echo "❌ Deployment timed out after 10 minutes"
+            echo "Deployment timed out after 10 minutes"
             exit 1
           fi
 
       - name: Get deployment logs
         if: always()
         run: |
-          echo "📝 Fetching deployment logs..."
-          echo ""
-
+          echo "Deployment logs:"
           aws ssm get-command-invocation \
             --command-id "${{ steps.deploy.outputs.command_id }}" \
             --instance-id "${{ steps.get-instance.outputs.instance_id }}" \
@@ -411,65 +350,43 @@ jobs:
 
       - name: Verify service health
         run: |
-          echo "🔍 Verifying service health..."
+          echo "Verifying service health..."
 
-          # Check service status via SSM
           HEALTH_CMD_ID=$(aws ssm send-command \
             --instance-ids "${{ steps.get-instance.outputs.instance_id }}" \
             --document-name "AWS-RunShellScript" \
             --parameters 'commands=[
-              "echo \"==> Service Status\"",
-              "sudo systemctl is-active ${{ env.SERVICE_NAME }} && echo \"✅ Service is active\" || echo \"❌ Service is NOT active\"",
-              "echo \"\"",
-              "echo \"==> Detailed Status\"",
+              "sudo systemctl is-active ${{ env.SERVICE_NAME }} && echo \"Service is active\" || echo \"Service is NOT active\"",
               "sudo systemctl status ${{ env.SERVICE_NAME }} --no-pager -l"
             ]' \
             --timeout-seconds 60 \
             --query 'Command.CommandId' \
             --output text)
 
-          # Wait for health check
           sleep 5
 
-          echo ""
-          echo "📋 Health check output:"
           aws ssm get-command-invocation \
             --command-id "${HEALTH_CMD_ID}" \
             --instance-id "${{ steps.get-instance.outputs.instance_id }}" \
             --query 'StandardOutputContent' \
             --output text
 
-          echo ""
-          echo "✅ Health check complete"
-
       - name: Create deployment summary
         if: always()
         run: |
-          cat >> $GITHUB_STEP_SUMMARY <<'EOF'
-          ## 🚀 Deployment Summary
+          cat >> $GITHUB_STEP_SUMMARY <<EOF
+          ## Deployment Summary
 
-          **Version:** ${{ needs.build.outputs.version }}
-          **Package:** ${{ needs.build.outputs.zip_filename }}
-          **Environment:** ${{ needs.build.outputs.environment }}
-          **Instance:** ${{ steps.get-instance.outputs.instance_id }}
-          **Deployed by:** ${{ github.actor }}
-          **Git SHA:** ${{ github.sha }}
-          **Branch:** ${{ github.ref_name }}
-
-          ### 📦 Deployment Details
-          - **S3 Location:** `s3://${{ env.S3_BUCKET }}/${{ needs.build.outputs.zip_filename }}`
-          - **Service:** `${{ env.SERVICE_NAME }}`
-          - **SSM Command:** `${{ steps.deploy.outputs.command_id }}`
-          - **AWS Region:** `${{ env.AWS_REGION }}`
-
-          ### ✅ Status
-          Deployment completed successfully! 🎉
-
-          ---
-
-          ### 📋 Post-Deployment Checklist
-          - [ ] Verify service is running: `sudo systemctl status ${{ env.SERVICE_NAME }}`
-          - [ ] Check logs: `sudo journalctl -u ${{ env.SERVICE_NAME }} -f`
-          - [ ] Test WebSocket endpoint: `https://<instance-ip>:8086/`
-          - [ ] Test TURN server connectivity
+          | Field | Value |
+          |-------|-------|
+          | **Environment** | ${{ needs.build.outputs.environment }} |
+          | **Version** | ${{ needs.build.outputs.version }} |
+          | **Package** | ${{ needs.build.outputs.zip_filename }} |
+          | **S3** | s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}/ |
+          | **Domain** | ${{ env.DEPLOY_DOMAIN }} |
+          | **Instance** | ${{ steps.get-instance.outputs.instance_id }} |
+          | **Deployed by** | ${{ github.actor }} |
+          | **Git SHA** | ${{ github.sha }} |
+          | **Branch** | ${{ github.ref_name }} |
+          | **SSM Command** | ${{ steps.deploy.outputs.command_id }} |
           EOF
