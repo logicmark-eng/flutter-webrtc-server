@@ -1,11 +1,11 @@
 # CI/CD Quick Start Guide
 
-Quick guide to set up the deployment pipeline in 5 minutes.
+Quick guide to set up the deployment pipeline.
 
 **Current Configuration:**
-- **Active branch:** `master` only
-- **Environment:** `develop`
-- **Current version:** `v0.0.7`
+- `develop` branch → deploys to `develop` environment
+- `master` branch → deploys to `main2` environment (production)
+- Both environments active
 
 ## ⚡ Setup in 3 Steps
 
@@ -18,7 +18,7 @@ aws iam create-open-id-connect-provider \
   --client-id-list sts.amazonaws.com \
   --thumbprint-list 6938fd4d98bab03faadb97b34396831e3780aea1
 
-# Create IAM Role
+# Trust policy template (replace ACCOUNT_ID and YOUR_ORG)
 cat > trust-policy.json <<'EOF'
 {
   "Version": "2012-10-17",
@@ -42,40 +42,22 @@ cat > trust-policy.json <<'EOF'
 }
 EOF
 
-# Replace ACCOUNT_ID and YOUR_ORG before executing:
-# Create role for develop environment
-aws iam create-role \
-  --role-name GitHubActions-WebRTC-Deploy-Develop \
-  --assume-role-policy-document file://trust-policy.json
-
-# For future: create roles for other environments
-# aws iam create-role --role-name GitHubActions-WebRTC-Deploy-QA --assume-role-policy-document file://trust-policy.json
-# aws iam create-role --role-name GitHubActions-WebRTC-Deploy-Staging --assume-role-policy-document file://trust-policy.json
-# aws iam create-role --role-name GitHubActions-WebRTC-Deploy-Main2 --assume-role-policy-document file://trust-policy.json
-
-# Attach required policies
+# Permissions policy template (adjust S3 bucket per environment)
 cat > permissions-policy.json <<'EOF'
 {
   "Version": "2012-10-17",
   "Statement": [
     {
       "Effect": "Allow",
-      "Action": [
-        "s3:PutObject",
-        "s3:GetObject",
-        "s3:ListBucket"
-      ],
+      "Action": ["s3:PutObject", "s3:GetObject", "s3:ListBucket", "s3:DeleteObject"],
       "Resource": [
-        "arn:aws:s3:::ota-img-dev.lgmk-eng.com/*",
-        "arn:aws:s3:::ota-img-dev.lgmk-eng.com"
+        "arn:aws:s3:::BUCKET_NAME/*",
+        "arn:aws:s3:::BUCKET_NAME"
       ]
     },
     {
       "Effect": "Allow",
-      "Action": [
-        "ec2:DescribeInstances",
-        "ec2:DescribeTags"
-      ],
+      "Action": ["ec2:DescribeInstances", "ec2:DescribeTags"],
       "Resource": "*"
     },
     {
@@ -92,156 +74,152 @@ cat > permissions-policy.json <<'EOF'
 }
 EOF
 
+# Create role for develop (bucket: ota-img-dev.lgmk-eng.com)
+aws iam create-role \
+  --role-name GitHubActions-WebRTC-Deploy-Develop \
+  --assume-role-policy-document file://trust-policy.json
+
 aws iam put-role-policy \
   --role-name GitHubActions-WebRTC-Deploy-Develop \
   --policy-name WebRTCDeploymentPolicy \
   --policy-document file://permissions-policy.json
 
-# Repeat for other environments when needed:
-# aws iam put-role-policy --role-name GitHubActions-WebRTC-Deploy-QA --policy-name WebRTCDeploymentPolicy --policy-document file://permissions-policy.json
-# aws iam put-role-policy --role-name GitHubActions-WebRTC-Deploy-Staging --policy-name WebRTCDeploymentPolicy --policy-document file://permissions-policy.json
-# aws iam put-role-policy --role-name GitHubActions-WebRTC-Deploy-Main2 --policy-name WebRTCDeploymentPolicy --policy-document file://permissions-policy.json
+# Create role for main2 (bucket: ota-img-main2.logicmarkcloud.com)
+# Note: main2 role already exists: arn:aws:iam::058264321995:role/lgmk-github-oidc-main-role2
 ```
 
 ### 2️⃣ Configure GitHub Secrets
 
 ```bash
-# In GitHub UI:
-# Settings → Secrets and variables → Actions → New repository secret
+# In GitHub UI: Settings → Secrets and variables → Actions → New repository secret
 
-# For develop environment (required now):
+# develop environment (required):
 # Name: AWS_ROLE_TO_ASSUME_DEVELOP
 # Value: arn:aws:iam::ACCOUNT_ID:role/GitHubActions-WebRTC-Deploy-Develop
 
-# For future environments (configure when needed):
-# AWS_ROLE_TO_ASSUME_QA
-# AWS_ROLE_TO_ASSUME_STAGING
-# AWS_ROLE_TO_ASSUME_MAIN2
+# main2/production (required):
+# Name: AWS_ROLE_TO_ASSUME_MAIN2
+# Value: arn:aws:iam::058264321995:role/lgmk-github-oidc-main-role2
 ```
 
-Or using GitHub CLI:
+Using GitHub CLI:
 
 ```bash
-# Configure develop environment role (required)
 gh secret set AWS_ROLE_TO_ASSUME_DEVELOP \
   --body "arn:aws:iam::ACCOUNT_ID:role/GitHubActions-WebRTC-Deploy-Develop"
 
-# Future environments (optional for now)
-# gh secret set AWS_ROLE_TO_ASSUME_QA --body "arn:aws:iam::ACCOUNT_ID:role/..."
-# gh secret set AWS_ROLE_TO_ASSUME_STAGING --body "arn:aws:iam::ACCOUNT_ID:role/..."
-# gh secret set AWS_ROLE_TO_ASSUME_MAIN2 --body "arn:aws:iam::ACCOUNT_ID:role/..."
+gh secret set AWS_ROLE_TO_ASSUME_MAIN2 \
+  --body "arn:aws:iam::058264321995:role/lgmk-github-oidc-main-role2"
 ```
 
 ### 3️⃣ Configure GitHub Environments
 
 ```bash
-# Create environment (GitHub UI or gh CLI)
+# Create environments in GitHub UI (Settings → Environments)
+# Or using gh CLI:
 gh api repos/:owner/:repo/environments/develop -X PUT
+gh api repos/:owner/:repo/environments/main2 -X PUT
+```
+
+### 4️⃣ Prepare EC2 Instances (first deploy only)
+
+The pipeline handles everything automatically except SSL certificates.
+Run certbot once per instance before the first deploy:
+
+```bash
+# develop instance
+sudo snap install --classic certbot
+sudo certbot certonly --standalone -d flutter-webrtc-develop2.lgmk-eng.com
+
+# main2 instance
+sudo snap install --classic certbot
+sudo certbot certonly --standalone -d flutter-webrtc.main2.logicmarkcloud.com
 ```
 
 ---
 
-## 🚀 Immediate Usage
+## 🚀 Usage
 
-### Automatic Deployment
+### Deploy to develop
 
 ```bash
-# Deploy to develop
-git checkout master
+git checkout develop
 git add .
 git commit -m "feat: new functionality"
+git push origin develop
+# Pipeline deploys automatically to develop environment
+```
+
+### Deploy to main2 (production)
+
+```bash
+# Merge develop → master via PR, then:
+git checkout master
+git merge develop
 git push origin master
-
-# Pipeline executes automatically
+# Pipeline deploys automatically to main2 environment
 ```
 
-### Manual Deployment
+### Create a versioned release (deploys to main2)
 
 ```bash
-# From GitHub UI:
-# Actions → Deploy Flutter WebRTC Server → Run workflow
-# - Branch: master
-# - Version: (leave empty or specify v0.0.8)
-
-# Or using CLI:
-gh workflow run deploy.yml --ref master
-gh workflow run deploy.yml --ref master -f version=v0.0.8
+git checkout master
+git tag -a v1.2.0 -m "Release v1.2.0"
+git push origin v1.2.0
 ```
 
-### Create Release
+### Manual trigger
 
 ```bash
-# Next version: v0.0.8
-git tag -a v0.0.8 -m "Release v0.0.8: Change description"
-git push origin v0.0.8
-
-# Automatically deploys with that tag
+gh workflow run deploy.yml --ref develop    # → develop environment
+gh workflow run deploy.yml --ref master     # → main2 environment
 ```
 
 ---
 
-## ✅ Verification
+## ✅ Verification Checklist
 
-### Test the Pipeline
+### develop environment
+- [ ] `AWS_ROLE_TO_ASSUME_DEVELOP` secret configured in GitHub
+- [ ] `develop` environment created in GitHub
+- [ ] EC2 `lgmk-flutter-webrtc-server-develop` running with SSM agent
+- [ ] certbot cert at `/etc/letsencrypt/live/flutter-webrtc-develop2.lgmk-eng.com/`
+- [ ] `configs/config-develop.ini` present in repository
+- [ ] First deployment successful → service running at port 8086
 
-```bash
-# 1. Make a small change
-echo "# Test" >> README.md
-git add README.md
-git commit -m "test: verify pipeline"
-git push origin master
-
-# 2. Go to GitHub Actions
-# https://github.com/YOUR_ORG/flutter-webrtc-server/actions
-
-# 3. View the workflow executing
-# Should complete in ~5-10 minutes
-
-# 4. Verify deployment
-ssh ubuntu@<instance-ip>
-sudo systemctl status flutter-webrtc.service
-sudo journalctl -u flutter-webrtc.service -n 20
-```
-
-### Verification Checklist
-
-- [ ] IAM Role created in AWS (per environment)
-- [ ] `AWS_ROLE_TO_ASSUME_DEVELOP` configured in GitHub Secrets
-- [ ] Environment `develop` created in GitHub
-- [ ] Script `deploy-flutter-webrtc-server.sh` on EC2 (`/home/ubuntu/`)
-- [ ] SSM agent running on EC2
-- [ ] SSL certificates on EC2 (`/etc/letsencrypt/live/`)
-- [ ] First deployment successful
+### main2 environment
+- [ ] `AWS_ROLE_TO_ASSUME_MAIN2` secret configured in GitHub
+- [ ] `main2` environment created in GitHub
+- [ ] EC2 `lgmk-flutter-webrtc-server-main2` running with SSM agent
+- [ ] certbot cert at `/etc/letsencrypt/live/flutter-webrtc.main2.logicmarkcloud.com/`
+- [ ] `configs/config-main2.ini` present in repository
+- [ ] First deployment successful → service running at port 8086
 
 ---
 
 ## 🔍 Current Project Status
 
-| Item | Configuration |
-|------|---------------|
-| **Active branch** | `master` |
-| **Environment** | `develop` |
-| **EC2 Instance** | `lgmk-flutter-webrtc-server-develop` |
-| **Current version** | `v0.0.7` |
-| **Status** | ✅ Active and functional |
-| **Next version** | `v0.0.8` |
-
-### Simplified Configuration
-
-Currently the project is configured simply:
-- Only `master` branch exists
-- Deploys only to `develop` environment
-- Environments `qa`, `staging`, and `main2` are disabled
-- Base version set at `v0.0.7`
+| Item | develop | main2 |
+|------|---------|-------|
+| **Branch** | `develop` | `master` |
+| **EC2 Instance** | `lgmk-flutter-webrtc-server-develop` | `lgmk-flutter-webrtc-server-main2` |
+| **S3 Bucket** | `ota-img-dev.lgmk-eng.com` | `ota-img-main2.logicmarkcloud.com` |
+| **S3 Prefix** | `flutter-webrtc-server-develop/` | `flutter-webrtc-server-main2/` |
+| **Domain** | `flutter-webrtc-develop2.lgmk-eng.com` | `flutter-webrtc.main2.logicmarkcloud.com` |
+| **App directory** | `/opt/flutter-webrtc/develop/` | `/opt/flutter-webrtc/main2/` |
+| **Service user** | `flutter-webrtc` | `flutter-webrtc` |
+| **Status** | ✅ Active | ✅ Active |
 
 ---
 
-## 🆘 Quick Troubleshooting
+## 🔍 Quick Troubleshooting
 
 **Error: "Instance not found"**
 ```bash
-# Verify enable_webrtc_server=true in environment
-cat /path/to/lgmk-pers-base-infra/terraform/environments/{env}.tfvars | grep enable_webrtc_server
+# Verify instance tag in AWS
+aws ec2 describe-instances \
+  --filters "Name=tag:Name,Values=lgmk-flutter-webrtc-server-<env>" \
+  --query 'Reservations[].Instances[].State.Name'
 ```
 
 **Error: "SSM agent not online"**
@@ -251,32 +229,30 @@ sudo systemctl restart amazon-ssm-agent
 sudo systemctl status amazon-ssm-agent
 ```
 
-**Error: "Deployment script not found"**
+**Error: "fullchain.pem not found"**
 ```bash
-# Copy script from repository to instance
-scp -i ~/.ssh/key.pem scripts/deploy-flutter-webrtc-server.sh ubuntu@<ip>:/home/ubuntu/
-ssh ubuntu@<ip> "chmod +x /home/ubuntu/deploy-flutter-webrtc-server.sh"
+sudo certbot certonly --standalone -d <domain>
+```
+
+**Service not starting after deploy**
+```bash
+ssh ubuntu@<instance-ip>
+sudo journalctl -u flutter-webrtc.service -n 50 --no-pager
 ```
 
 ---
 
 ## 📚 Complete Documentation
 
-See `CICD-SETUP.md` for detailed documentation with:
-- Complete pipeline architecture
+See `CICD-SETUP.md` for detailed documentation:
+- Full pipeline architecture diagram
+- IAM policy templates per environment
+- Directory layout on EC2
+- Rollback procedure
 - Advanced troubleshooting
-- Monitoring and observability
 - Security best practices
 
 ---
 
-## 🎯 Next Steps
-
-1. ✅ Configure OIDC and secrets (this guide)
-2. 🔄 Test deployment to develop
-3. 🔄 Test deployment with new tag (v0.0.8)
-4. 📋 Future: Enable infrastructure for QA/Staging/Production
-
----
-
-**Need help?** View logs at: GitHub Actions → Deploy Flutter WebRTC Server
+**Last updated:** 2026-03-05
+**Maintained by:** SRE Team

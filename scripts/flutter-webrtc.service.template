@@ -1,0 +1,24 @@
+[Unit]
+Description=Flutter WebRTC Signaling Server ({{ENVIRONMENT}})
+After=network.target
+
+[Service]
+Type=simple
+User=flutter-webrtc
+Group=flutter-webrtc
+WorkingDirectory=/opt/flutter-webrtc/{{ENVIRONMENT}}
+ExecStart=/opt/flutter-webrtc/{{ENVIRONMENT}}/webrtc-server
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/flutter-webrtc/{{ENVIRONMENT}}
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
