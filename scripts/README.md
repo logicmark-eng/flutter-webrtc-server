@@ -108,10 +108,11 @@ Created automatically by the script on first deploy.
 
 **On EC2 instance:**
 - Ubuntu 24.04 LTS
-- AWS CLI (IAM role attached, no static credentials)
-- `unzip`, `systemctl`, `sudo`
+- AWS CLI — `sudo snap install aws-cli --classic`
+- `zip`, `unzip` — `sudo apt-get install -y zip unzip`
+- `systemctl`, `sudo`
+- IAM role attached with S3 read and SSM permissions (no static credentials)
 - Let's Encrypt certificates at `/etc/letsencrypt/live/<domain>/`
-- Go (via Linuxbrew) — only needed if binary is not pre-compiled
 
 **The script does NOT need to be pre-installed on the instance.** The CI/CD
 pipeline extracts the latest version from the ZIP package before executing it.

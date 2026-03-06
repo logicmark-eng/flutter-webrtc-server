@@ -106,6 +106,19 @@ terraform apply -var-file=environments/{environment}.tfvars
 
 Each EC2 instance needs the following before the first pipeline run:
 
+**Required packages:**
+```bash
+# AWS CLI (required by SSM inline commands and by the deploy script)
+sudo snap install aws-cli --classic
+
+# zip / unzip (required by the deploy script)
+sudo apt-get install -y zip unzip
+
+# Verify
+aws --version
+unzip -v | head -1
+```
+
 **SSL Certificates (certbot):**
 ```bash
 # Install certbot
@@ -123,11 +136,11 @@ sudo ls -la /etc/letsencrypt/live/<domain>/
 # Expected files: fullchain.pem, privkey.pem
 ```
 
-**No other pre-installation required.** The pipeline:
-- Compiles the Go binary in GitHub Actions (pre-compiled, no Go needed on EC2)
+**Handled automatically by the pipeline:**
+- Compiles the Go binary in GitHub Actions (no Go needed on EC2)
 - Extracts the updated deploy script from the ZIP package before executing it
-- Creates the `flutter-webrtc` system user automatically on first deploy
-- Installs and enables the systemd service automatically on first deploy
+- Creates the `flutter-webrtc` system user on first deploy
+- Installs and enables the systemd service on first deploy
 
 ### 3. S3 Buckets
 
