@@ -528,5 +528,5 @@ Before promoting develop → master (main2 deploy):
 
 ---
 
-**Last updated:** 2026-03-05
+**Last updated:** 2026-03-06
 **Maintained by:** SRE Team
