@@ -186,20 +186,20 @@ gh workflow run deploy.yml --ref master     # → main2 environment
 ## ✅ Verification Checklist
 
 ### develop environment
-- [ ] `AWS_ROLE_TO_ASSUME_DEVELOP` secret configured in GitHub
-- [ ] `develop` environment created in GitHub
-- [ ] EC2 `lgmk-flutter-webrtc-server-develop` running with SSM agent
-- [ ] certbot cert at `/etc/letsencrypt/live/flutter-webrtc-develop2.lgmk-eng.com/`
-- [ ] `configs/config-develop.ini` present in repository
-- [ ] First deployment successful → service running at port 8086
+- [x]`AWS_ROLE_TO_ASSUME_DEVELOP` secret configured in GitHub
+- [x]`develop` environment created in GitHub
+- [x]EC2 `lgmk-flutter-webrtc-server-develop` running with SSM agent
+- [x]certbot cert at `/etc/letsencrypt/live/flutter-webrtc-develop2.lgmk-eng.com/`
+- [x]`configs/config-develop.ini` present in repository
+- [x]First deployment successful → service running at port 8086
 
 ### main2 environment
-- [ ] `AWS_ROLE_TO_ASSUME_MAIN2` secret configured in GitHub
-- [ ] `main2` environment created in GitHub
-- [ ] EC2 `lgmk-flutter-webrtc-server-main2` running with SSM agent
-- [ ] certbot cert at `/etc/letsencrypt/live/flutter-webrtc.main2.logicmarkcloud.com/`
-- [ ] `configs/config-main2.ini` present in repository
-- [ ] First deployment successful → service running at port 8086
+- [x]`AWS_ROLE_TO_ASSUME_MAIN2` secret configured in GitHub
+- [x]`main2` environment created in GitHub
+- [x]EC2 `lgmk-flutter-webrtc-server-main2` running with SSM agent
+- [x]certbot cert at `/etc/letsencrypt/live/flutter-webrtc.main2.logicmarkcloud.com/`
+- [x]`configs/config-main2.ini` present in repository
+- [x]First deployment successful → service running at port 8086
 
 ---
 
@@ -260,5 +260,5 @@ See `CICD-SETUP.md` for detailed documentation:
 
 ---
 
-**Last updated:** 2026-03-05
+**Last updated:** 2026-03-06
 **Maintained by:** SRE Team
