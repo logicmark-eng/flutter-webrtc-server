@@ -293,8 +293,15 @@ echo "==> Copying TLS certs..."
 sudo mkdir -p "${CERT_DST_DIR}"
 sudo cp "${LE_DOMAIN_PATH}/fullchain.pem" "${CERT_DST_DIR}/cert.pem"
 sudo cp "${LE_DOMAIN_PATH}/privkey.pem"   "${CERT_DST_DIR}/key.pem"
-sudo chown "${SERVICE_USER}:${SERVICE_USER}" "${CERT_DST_DIR}"/*.pem
-sudo chmod 640 "${CERT_DST_DIR}"/*.pem
+# Use explicit paths instead of a glob — the ubuntu user cannot traverse
+# ${TARGET_DIR} after chown -R flutter-webrtc + chmod 750, so shell glob
+# expansion of *.pem would fail with "No such file or directory".
+sudo chown "${SERVICE_USER}:${SERVICE_USER}" \
+  "${CERT_DST_DIR}/cert.pem" \
+  "${CERT_DST_DIR}/key.pem"
+sudo chmod 640 \
+  "${CERT_DST_DIR}/cert.pem" \
+  "${CERT_DST_DIR}/key.pem"
 
 # ============================================================================
 # Start service
