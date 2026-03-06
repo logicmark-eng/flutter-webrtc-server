@@ -307,6 +307,7 @@ jobs:
             --comment "Deploy WebRTC Server ${{ needs.build.outputs.version }} to ${{ needs.build.outputs.environment }}" \
             --parameters 'commands=[
               "set -eu",
+              "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin",
               "echo \"==> WebRTC Server Deployment\"",
               "echo \"    Version: ${{ needs.build.outputs.version }}\"",
               "echo \"    Package: ${{ needs.build.outputs.zip_filename }}\"",
