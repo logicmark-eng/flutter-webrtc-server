@@ -196,60 +196,79 @@ The `web/` directory contains a compiled Flutter web application (demo client). 
 
 ### Automated Deployment Pipeline
 
-The project uses GitHub Actions for automated deployment to AWS EC2:
+The project uses GitHub Actions for automated deployment to AWS EC2 with multi-environment support:
+
+**Branch to environment mapping:**
+- `develop` branch → develop environment
+- `master` branch → main2 environment (production)
+- `v*.*.*` tags → main2 environment
 
 **Pipeline Overview:**
-1. Push to `master` branch triggers workflow
-2. Creates versioned ZIP package
-3. Uploads to S3: `ota-img-dev.lgmk-eng.com`
-4. Executes deployment via AWS Systems Manager (SSM)
-5. EC2 instance downloads, builds, and restarts service
+1. Determine environment from branch
+2. Compile Go binary (CGO_ENABLED=0, linux/amd64) in GitHub Actions
+3. Create versioned ZIP: `flutter-webrtc-server-<env>-<version>.zip`
+4. Upload to environment-specific S3 bucket + prefix
+5. Rotate S3 packages (keep last 5 per prefix)
+6. Find EC2 instance by Name tag: `lgmk-flutter-webrtc-server-<environment>`
+7. Execute deployment via SSM (extracts deploy script from ZIP)
+8. Verify service health
 
 **Documentation:**
 - Quick start: `.github/CICD-QUICK-START.md`
 - Complete guide: `CICD-SETUP.md`
-- Flow diagrams: `.github/DEPLOYMENT-FLOW.md`
 
 ### Deployment Scripts
 
 **Location:** `scripts/deploy-flutter-webrtc-server.sh`
 
 The deployment script handles:
-- Download from S3
-- Backup current version (timestamped)
-- Extract and build Go binary
-- Copy SSL/TLS certificates from Let's Encrypt
-- Systemd service restart
-- Rollback support
+- Creates `flutter-webrtc` system user (no shell, no sudo) on first deploy
+- Installs/updates systemd service with security hardening
+- Downloads ZIP from S3, backs up current version (timestamped snapshots)
+- Extracts and promotes new version to `/opt/flutter-webrtc/<environment>/`
+- Applies `configs/config-<env>.ini` → `configs/config.ini`
+- Uses pre-compiled binary (no Go required on EC2)
+- Copies TLS certificates from Let's Encrypt
+- Restarts service
 
-**Usage on EC2:**
-```bash
-./deploy-flutter-webrtc-server.sh -b ota-img-dev.lgmk-eng.com -f <zip-file>
-```
+**Script does NOT need to be pre-installed** — the pipeline extracts it from the ZIP.
 
 See `scripts/README.md` for detailed documentation.
 
 ### Current Configuration
 
-- **Active Branch:** `master`
-- **Environment:** develop
-- **Current Version:** v0.0.7
-- **Next Version:** v0.0.8
-- **EC2 Instance:** `lgmk-flutter-webrtc-server-develop`
-- **Deployment Method:** GitHub Actions → S3 → SSM → EC2
+| Item | develop | main2 |
+|------|---------|-------|
+| **Branch** | `develop` | `master` |
+| **S3 Bucket** | `ota-img-dev.lgmk-eng.com` | `ota-img-main2.logicmarkcloud.com` |
+| **S3 Prefix** | `flutter-webrtc-server-develop/` | `flutter-webrtc-server-main2/` |
+| **Domain** | `flutter-webrtc-develop2.lgmk-eng.com` | `flutter-webrtc.main2.logicmarkcloud.com` |
+| **EC2 Instance** | `lgmk-flutter-webrtc-server-develop` | `lgmk-flutter-webrtc-server-main2` |
+| **App Directory** | `/opt/flutter-webrtc/develop/` | `/opt/flutter-webrtc/main2/` |
+| **Status** | ✅ Active | ✅ Active |
 
 ### IAM Roles (OIDC)
 
 GitHub Actions uses environment-specific IAM roles:
-- `AWS_ROLE_TO_ASSUME_DEVELOP` - For develop environment (active)
-- `AWS_ROLE_TO_ASSUME_QA` - For qa environment (future)
-- `AWS_ROLE_TO_ASSUME_STAGING` - For staging environment (future)
-- `AWS_ROLE_TO_ASSUME_MAIN2` - For production/main2 (future)
+- `AWS_ROLE_TO_ASSUME_DEVELOP` - develop environment ✅ active
+- `AWS_ROLE_TO_ASSUME_MAIN2` - main2/production (`arn:aws:iam::058264321995:role/lgmk-github-oidc-main-role2`) ✅ active
+- `AWS_ROLE_TO_ASSUME_QA` - qa environment (future)
+- `AWS_ROLE_TO_ASSUME_STAGING` - staging environment (future)
+
+### EC2 Instance Prerequisites (first deploy)
+
+Each instance requires before the first pipeline run:
+```bash
+sudo snap install aws-cli --classic
+sudo apt-get install -y zip unzip
+sudo snap install --classic certbot
+sudo certbot certonly --standalone -d <domain>
+```
 
 ### Infrastructure
 
 Managed by separate Terraform project: `lgmk-pers-base-infra`
-- EC2 instance with Ubuntu 24.04 LTS
+- EC2 instances with Ubuntu 24.04 LTS
 - Security groups (ports: 22, 80, 8086, 19302/UDP, 19303/TCP)
 - IAM roles for SSM and CloudWatch
 - Let's Encrypt SSL certificates
