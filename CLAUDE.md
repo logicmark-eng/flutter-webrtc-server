@@ -229,6 +229,7 @@ The deployment script handles:
 - Applies `configs/config-<env>.ini` → `configs/config.ini`
 - Uses pre-compiled binary (no Go required on EC2)
 - Copies TLS certificates from Let's Encrypt
+- Installs certbot deploy hook (`scripts/certbot-deploy-hook.sh` → `/etc/letsencrypt/renewal-hooks/deploy/flutter-webrtc.sh`) so renewed certificates are copied to the app dir and the service restarted automatically — without it the service keeps serving the cert copied at deploy time until it expires
 - Restarts service
 
 **Script does NOT need to be pre-installed** — the pipeline extracts it from the ZIP.
@@ -264,6 +265,10 @@ sudo apt-get install -y zip unzip
 sudo snap install --classic certbot
 sudo certbot certonly --standalone -d <domain>
 ```
+
+**Certificate renewal requirements:**
+- The domain's DNS A record MUST point to the instance's current public IP — Let's Encrypt validates HTTP-01 on port 80 against the resolved IP. Instances without an Elastic IP get a new public IP on stop/start, which silently breaks renewals (root cause of the July 2026 expired-cert incident on develop).
+- The certbot deploy hook (installed by the deploy script) propagates renewed certs to the app dir and restarts the service. Verify with: `ls -l /etc/letsencrypt/renewal-hooks/deploy/flutter-webrtc.sh`
 
 ### Infrastructure
 

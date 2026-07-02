@@ -304,6 +304,26 @@ sudo chmod 640 \
   "${CERT_DST_DIR}/key.pem"
 
 # ============================================================================
+# Certbot deploy hook
+# ============================================================================
+# Certbot renews certificates under /etc/letsencrypt but nothing refreshes
+# the copies in ${CERT_DST_DIR} between deploys — the service would keep
+# serving an expired certificate. The hook copies renewed certs and restarts
+# the service after every successful renewal.
+
+HOOK_SRC="${TARGET_DIR}/scripts/certbot-deploy-hook.sh"
+HOOK_DST="/etc/letsencrypt/renewal-hooks/deploy/flutter-webrtc.sh"
+
+if sudo test -f "${HOOK_SRC}"; then
+  echo "==> Installing certbot deploy hook..."
+  sudo mkdir -p "$(dirname "${HOOK_DST}")"
+  sudo cp "${HOOK_SRC}" "${HOOK_DST}"
+  sudo chmod 755 "${HOOK_DST}"
+else
+  echo "WARN: certbot deploy hook not found at ${HOOK_SRC}, skipping." >&2
+fi
+
+# ============================================================================
 # Start service
 # ============================================================================
 
